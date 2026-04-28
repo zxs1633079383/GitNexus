@@ -684,4 +684,63 @@ Output feeds Stage 5 (test gen) + Stage 7 (auto-PR with revert proposal).`,
       required: ['spans'],
     },
   },
+  // ─── Stage 5 · E2E Test Generator (P4, R-1 scaffold-only) ───────────
+  // 三层 test (unit + contract + integration) 调用链结构骨架。Stage 6 直接消费。
+  {
+    name: 'gen_e2e_tests',
+    description: `Generate three-layer test scaffolds (unit + contract + integration) for a handler.
+
+R-1 (降期望): only the call-chain SKELETON + TODO comments are generated.
+DB seed / mock schema / business assertions are explicitly left to the developer.
+Stage 6 (preview env) verifies "the call chain runs", not "business is correct".
+
+R-7 layer rules:
+- Unit:        Method / Function leaves with no STEP_IN_PROCESS successor
+- Contract:    Route nodes OR nodes with ContractLink edges (HANDLES_ROUTE / FETCHES)
+- Integration: ENTRY_POINT_OF → STEP_IN_PROCESS chain ≥ 2 hops
+
+Languages supported (R-13: satisfies Record): java/kotlin (JUnit5), typescript /
+javascript (Jest), go (testing), python (pytest). Other languages → all three layers
+skipped with a 'no adapter' note (caller can drop down to the static call-chain JSON
+returned in plan.layers).
+
+OUTPUT:
+- language / framework
+- plan.layers.{unit, contract, integration}: classified ChainNode[]
+- plan.integrationPath:                        the call chain to replay
+- files: [{filePath, layer, content}]          ready-to-write scaffolds
+- skipped: [{layer, reason}]                   why some layers got nothing
+
+WHEN TO USE: Stage 5 of the loop. Caller gives a target handler (typically the
+top suspect from regression_forensics or the symbolUid from resolve_span);
+GitNexus emits scaffolds Stage 6 K8s preview env can mount + run.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target_uid: {
+          type: 'string',
+          description: 'Handler symbol UID (typically from resolve_span / regression_forensics).',
+        },
+        max_depth: {
+          type: 'number',
+          description: 'BFS max depth into the Process chain (default: 6)',
+          default: 6,
+          minimum: 1,
+          maximum: 32,
+        },
+        max_nodes: {
+          type: 'number',
+          description: 'BFS max nodes (default: 200)',
+          default: 200,
+          minimum: 1,
+          maximum: 5000,
+        },
+        repo: {
+          type: 'string',
+          description: 'Repository name or path. Omit if only one repo is indexed.',
+        },
+      },
+      required: ['target_uid'],
+    },
+  },
 ];

@@ -732,6 +732,8 @@ export class LocalBackend {
         return this.apiBlastRadius(repo, params as Record<string, unknown>);
       case 'regression_forensics':
         return this.regressionForensics(repo, params as Record<string, unknown>);
+      case 'gen_e2e_tests':
+        return this.genE2ETests(repo, params as Record<string, unknown>);
       default:
         throw new Error(`Unknown tool: ${method}`);
     }
@@ -3752,6 +3754,101 @@ export class LocalBackend {
       resolvedBy: 'none',
       errorEvent: norm.errorEvent,
     };
+  }
+
+  // ─── Stage 5 · E2E Test Generator (P4, query-only, R-1 scaffold-only) ─
+  //
+  // 输入: handler 的 symbolUid (可由 Phase 0 / Stage 4 输出)。
+  // 输出: 三层 test 文件 (unit / contract / integration) + 跳过原因。
+  //
+  // R-1: scaffold-only. 不调 LLM, 不强求自动填值域 (业务正确性留给开发者)。
+  // R-6 / RULES §0.4: 整条调用链遍历 + 适配器 emit 都 deterministic, 不进 ingestion。
+  // R-7: test-planner 判决规则 (Method/Function 叶子 → unit; Route or ContractLink → contract;
+  //      longestPath ≥2 → integration)。
+  // R-13: TEST_ADAPTERS satisfies Record, 漏语言 = 编译错误。
+  private async genE2ETests(
+    repo: RepoHandle,
+    params: Record<string, unknown>,
+  ): Promise<any> {
+    await this.ensureInitialized(repo.id);
+    const { traverseChain } = await import(
+      '../../core/test-gen/process-traversal.js'
+    );
+    const { generateTestScaffolds, detectLanguage } = await import(
+      '../../core/test-gen/generator.js'
+    );
+
+    const entryUid = params.target_uid as string | undefined;
+    if (!entryUid) {
+      return { error: 'target_uid is required (handler symbol uid).' };
+    }
+
+    // 1. graph callbacks: fetch entry meta + STEP_IN_PROCESS 出边
+    const fetchNode = async (uid: string) => {
+      const rows = await executeParameterized(
+        repo.id,
+        `MATCH (n {id: $uid})
+         RETURN n.name AS name, labels(n)[0] AS kind, n.filePath AS filePath,
+                n.startLine AS startLine, n.endLine AS endLine LIMIT 1`,
+        { uid },
+      );
+      if (rows.length === 0) return null;
+      const r = rows[0] as any;
+      return {
+        name: (r.name ?? r[0]) as string,
+        kind: (r.kind ?? r[1]) as string,
+        filePath: (r.filePath ?? r[2]) as string | undefined,
+        startLine: (r.startLine ?? r[3]) as number | undefined,
+        endLine: (r.endLine ?? r[4]) as number | undefined,
+      };
+    };
+    const fetchNextSteps = async (uid: string) => {
+      const rows = await executeParameterized(
+        repo.id,
+        `MATCH (a {id: $uid})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(b)
+         RETURN b.id AS uid, b.name AS name, labels(b)[0] AS kind,
+                b.filePath AS filePath, b.startLine AS startLine, b.endLine AS endLine
+         LIMIT 50`,
+        { uid },
+      );
+      return (rows as any[]).map((r) => ({
+        uid: (r.uid ?? r[0]) as string,
+        name: (r.name ?? r[1]) as string,
+        kind: (r.kind ?? r[2]) as string,
+        filePath: (r.filePath ?? r[3]) as string | undefined,
+        startLine: (r.startLine ?? r[4]) as number | undefined,
+        endLine: (r.endLine ?? r[5]) as number | undefined,
+      }));
+    };
+
+    const traversal = await traverseChain(entryUid, fetchNode, fetchNextSteps, {
+      maxDepth: (params.max_depth as number | undefined) ?? 6,
+      maxNodes: (params.max_nodes as number | undefined) ?? 200,
+    });
+
+    // 2. ContractLink: 受 ContractLink 边触及的节点 uid 集合
+    const contractRows = await executeParameterized(
+      repo.id,
+      `MATCH (a)-[r:CodeRelation]-(b)
+       WHERE r.type IN ['CONTRACT_LINK', 'HANDLES_ROUTE', 'FETCHES']
+         AND a.id IN $uids
+       RETURN DISTINCT a.id AS uid LIMIT 200`,
+      { uids: traversal.nodes.map((n) => n.uid) },
+    );
+    const contractLinks = new Set<string>(
+      (contractRows as any[]).map((r) => (r.uid ?? r[0]) as string),
+    );
+
+    const entry = traversal.longestPath[0] ?? traversal.nodes[0] ?? null;
+    const language = detectLanguage(entry?.filePath);
+    const baseName = (entry?.name ?? 'unknown_handler').split('.').pop() ?? 'unknown_handler';
+
+    return generateTestScaffolds({
+      traversal,
+      baseName,
+      language,
+      contractLinks,
+    });
   }
 
   // ─── Stage 4 · Auto Regression Forensics (P5, query-only) ──────

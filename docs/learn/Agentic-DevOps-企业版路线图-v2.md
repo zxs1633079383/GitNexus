@@ -40,7 +40,7 @@ flowchart TB
     S2["🎯 2.锚点 · Phase 0 Trace2Code Resolver<br/>Jaeger/OTel 双格式 + 5 层 fallback + stacktrace ✅"]:::existing
     S3["💥 3.爆炸 · GitNexus blast radius<br/>api_blast_radius depth=2 crossDepth=1 ✅"]:::existing
     S4["🔬 4.溯源 · P5 Auto Regression Forensics<br/>git log ∩ blast radius ✅"]:::existing
-    S5["🧪 5.生成 · P4 E2E Test Generator<br/>unit + contract + integration"]:::new
+    S5["🧪 5.生成 · P4 E2E Test Generator<br/>unit + contract + integration ✅<br/>(R-1: scaffold + TODO 占位)"]:::existing
     S6["🚀 6.执行 · K8s Preview Env Spinner<br/>注入回滚版 + 跑 test"]:::new
     S7["📤 7.回写 · Auto-PR/MR Creator<br/>Revert / Patch / Hotfix 占位"]:::new
     LOOP[/"开发者 review/merge → ship<br/>→ 新一轮 /observe 验证"/]:::external
