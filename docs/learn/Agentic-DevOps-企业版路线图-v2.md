@@ -30,6 +30,61 @@ GitNexus 在这个目标里扮演**确定性知识基础设施**——给 Agent 
 > 编码侧 coding 闭环（brainstorm / plan / exec / review / ship）由独立编排系统主导，**不在本路线图范围**。
 > **本路线图聚焦运行时侧 7 阶段闭环**：从线上出错 → 锚点 → 爆炸 → 溯源 → 生成 → 执行 → 自动开 PR/MR。
 
+#### 可视化总览
+
+```mermaid
+flowchart TB
+    OBS["🔍 1.观测<br/>/observe + Jaeger + Prom"]:::existing
+    ISSUE[/"📋 GitHub/GitLab Issue<br/>traceId + service + 路径"/]:::external
+    PRE["⚙️ pre · P1 Auto-reindex Webhook<br/>校验 last commit vs 索引快照"]:::new
+    S2["🎯 2.锚点 · Phase 0 Trace2Code Resolver<br/>Jaeger/OTel 双格式 + 5 层 fallback + stacktrace"]:::new
+    S3["💥 3.爆炸 · GitNexus blast radius<br/>impact depth=2 crossDepth=1"]:::existing
+    S4["🔬 4.溯源 · P5 Auto Regression Forensics<br/>git log ∩ blast radius"]:::new
+    S5["🧪 5.生成 · P4 E2E Test Generator<br/>unit + contract + integration"]:::new
+    S6["🚀 6.执行 · K8s Preview Env Spinner<br/>注入回滚版 + 跑 test"]:::new
+    S7["📤 7.回写 · Auto-PR/MR Creator<br/>Revert / Patch / Hotfix 占位"]:::new
+    LOOP[/"开发者 review/merge → ship<br/>→ 新一轮 /observe 验证"/]:::external
+
+    ORCH["🎼 Pipeline Orchestrator + Comment Policy<br/>串联 1→7 + 失败回退 + 评论分发"]:::cross
+    WIKI["📚 P3 Auto Wiki<br/>(side-effect)"]:::side
+    P2["🔗 P2 Multi-hop crossDepth>1<br/>(并行：Stage 3 增强)"]:::parallel
+    P6["🐫 P6 OCaml LanguageProvider<br/>(并行：语言扩展)"]:::parallel
+
+    OBS -->|发现 error / 慢响应| ISSUE
+    ISSUE -->|webhook issue.opened| PRE
+    PRE -->|图最新| S2
+    S2 -->|symbol UID| S3
+    S3 -->|blast radius| S4
+    S4 -->|嫌疑提交 Top 3| S5
+    S5 -->|test files| S6
+    S6 -->|验证报告| S7
+    S7 --> LOOP
+    LOOP -.->|闭环| OBS
+
+    ORCH -.->|管控| PRE
+    ORCH -.->|管控| S2
+    ORCH -.->|管控| S4
+    ORCH -.->|管控| S5
+    ORCH -.->|管控| S6
+    ORCH -.->|管控| S7
+
+    PRE -.->|push 事件触发| WIKI
+    P2 -.->|多跳能力| S3
+
+    classDef existing fill:#d4f4dd,stroke:#2d6a4f,color:#000,stroke-width:2px
+    classDef new fill:#fff3cd,stroke:#856404,color:#000,stroke-width:2px
+    classDef cross fill:#cfe2ff,stroke:#0a4d8c,color:#000,stroke-width:2px
+    classDef side fill:#fcefee,stroke:#a04040,color:#000,stroke-width:1px
+    classDef parallel fill:#eaeaea,stroke:#666,color:#000,stroke-width:1px,stroke-dasharray: 3 3
+    classDef external fill:#fff,stroke:#888,color:#000,stroke-width:1px
+```
+
+**图例**：
+🟢 绿色 = 已有（OSS / 外部已就绪）；🟡 黄色 = 本路线图新增；🔵 蓝色 = 横切层；
+🔴 粉色 = side-effect；⚪ 灰色 = 并行线；空白 = 外部触发 / 闭环。
+
+#### 详细文字说明
+
 ```
 ═══════════════════════════════════════════════════════════════
 【1.观测】 /observe (Jaeger + Prom 巡检)               外部已有 ✅
