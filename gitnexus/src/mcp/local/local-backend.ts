@@ -734,6 +734,8 @@ export class LocalBackend {
         return this.regressionForensics(repo, params as Record<string, unknown>);
       case 'gen_e2e_tests':
         return this.genE2ETests(repo, params as Record<string, unknown>);
+      case 'run_pipeline':
+        return this.runPipeline(repo, params as Record<string, unknown>);
       default:
         throw new Error(`Unknown tool: ${method}`);
     }
@@ -3995,6 +3997,38 @@ export class LocalBackend {
       ...baseParams,
       direction: direction === 'upstream' ? 'upstream' : 'downstream',
     });
+  }
+
+  // 横切 · run_pipeline — 串 S2 → S3 → S4 → S5 一条 dry-run。
+  // S6 / S7 落地后在 orchestrator 内切换 stub → 真实调用。
+  private async runPipeline(
+    repo: RepoHandle,
+    params: Record<string, unknown>,
+  ): Promise<unknown> {
+    const { runPipeline } = await import('../../core/pipeline/orchestrator.js');
+    const spans = (params.spans as unknown[] | undefined) ?? [];
+    if (!Array.isArray(spans) || spans.length === 0) {
+      return { error: 'spans is required (non-empty array)' };
+    }
+    const blast = {
+      depth: params.blast_depth as number | undefined,
+      crossDepth: params.blast_cross_depth as number | undefined,
+    };
+    return runPipeline(
+      {
+        spans: spans as any[],
+        forensicsLookback: params.forensicsLookback as number | undefined,
+        blast,
+        testLanguageHint: params.testLanguageHint as string | undefined,
+      },
+      {
+        resolveSpan: (span) => this.resolveSpanToHandler(repo, { span }),
+        apiBlastRadius: (p) => this.apiBlastRadius(repo, p as Record<string, unknown>),
+        regressionForensics: (p) =>
+          this.regressionForensics(repo, p as Record<string, unknown>),
+        genE2ETests: (p) => this.genE2ETests(repo, p as Record<string, unknown>),
+      },
+    );
   }
 
   // ─── Direct Graph Queries (for resources.ts) ────────────────────

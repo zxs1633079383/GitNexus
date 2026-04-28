@@ -743,4 +743,41 @@ GitNexus emits scaffolds Stage 6 K8s preview env can mount + run.`,
       required: ['target_uid'],
     },
   },
+  {
+    name: 'run_pipeline',
+    description:
+      'Agentic DevOps 横切：把 spans 一次喂入 4 阶段（resolve_span → api_blast_radius → regression_forensics → gen_e2e_tests），返回逐 stage 结果 + 总耗时；S6/S7 现阶段 stub。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        spans: {
+          type: 'array',
+          items: { type: 'object' },
+          description:
+            'Jaeger / OTel spans 数组（与 resolve_span 相同 schema）。必须非空。',
+        },
+        forensicsLookback: {
+          type: 'number',
+          description: 'regression_forensics 往前看几个 commit。默认 50。',
+        },
+        blast_depth: {
+          type: 'number',
+          description: 'api_blast_radius 本地深度，默认 2',
+        },
+        blast_cross_depth: {
+          type: 'number',
+          description: 'api_blast_radius 跨仓深度，默认 1',
+        },
+        testLanguageHint: {
+          type: 'string',
+          description: 'gen_e2e_tests 语言提示；省略则按 handler-file 后缀推断。',
+        },
+        repo: {
+          type: 'string',
+          description: 'Repository name or path. Omit if only one repo is indexed.',
+        },
+      },
+      required: ['spans'],
+    },
+  },
 ];

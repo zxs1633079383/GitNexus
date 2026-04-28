@@ -36,7 +36,7 @@ GitNexus 在这个目标里扮演**确定性知识基础设施**——给 Agent 
 flowchart TB
     OBS["🔍 1.观测<br/>/observe + Jaeger + Prom"]:::existing
     ISSUE[/"📋 GitHub/GitLab Issue<br/>traceId + service + 路径"/]:::external
-    PRE["⚙️ pre · P1 Auto-reindex Webhook<br/>校验 last commit vs 索引快照"]:::new
+    PRE["⚙️ pre · P1 Auto-reindex Webhook<br/>校验 last commit vs 索引快照 ✅<br/>(stage-1: HMAC + dedup 复用)"]:::existing
     S2["🎯 2.锚点 · Phase 0 Trace2Code Resolver<br/>Jaeger/OTel 双格式 + 5 层 fallback + stacktrace ✅"]:::existing
     S3["💥 3.爆炸 · GitNexus blast radius<br/>api_blast_radius depth=2 crossDepth=1 ✅"]:::existing
     S4["🔬 4.溯源 · P5 Auto Regression Forensics<br/>git log ∩ blast radius ✅"]:::existing
@@ -45,7 +45,7 @@ flowchart TB
     S7["📤 7.回写 · Auto-PR/MR Creator<br/>Revert / Patch / Hotfix 占位"]:::new
     LOOP[/"开发者 review/merge → ship<br/>→ 新一轮 /observe 验证"/]:::external
 
-    ORCH["🎼 Pipeline Orchestrator + Comment Policy<br/>串联 1→7 + 失败回退 + 评论分发"]:::cross
+    ORCH["🎼 Pipeline Orchestrator + Comment Policy<br/>串联 1→7 + 失败回退 + 评论分发 ✅<br/>(B v0.1.0: S2-S5 dry-run，S6/S7 stub)"]:::existing
     WIKI["📚 P3 Auto Wiki<br/>(side-effect)"]:::side
     P2["🔗 P2 Multi-hop crossDepth>1<br/>(并行：Stage 3 增强)"]:::parallel
     P6["🐫 P6 OCaml LanguageProvider<br/>(并行：语言扩展)"]:::parallel
