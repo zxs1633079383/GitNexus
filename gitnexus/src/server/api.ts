@@ -34,6 +34,7 @@ import { fork } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { JobManager } from './analyze-job.js';
 import { extractRepoName, getCloneDir, cloneOrPull } from './git-clone.js';
+import { mountWebhookRoutes } from './webhook/handler.js';
 
 const _require = createRequire(import.meta.url);
 const pkg = _require('../../package.json');
@@ -1142,51 +1143,24 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
   // ── Analyze API ──────────────────────────────────────────────────────
 
-  // POST /api/analyze — start a new analysis job
-  app.post('/api/analyze', async (req, res) => {
-    try {
-      const { url: repoUrl, path: repoLocalPath, force, embeddings } = req.body;
+  // P1: extracted analyze pipeline so /api/analyze + webhook 都能复用 (Fix-3
+  // dedup 仍由 jobManager.createJob 负责，本函数假定 job 已被 createJob 创建。)
+  type AnalyzePipelineOpts = {
+    repoUrl?: string;
+    repoLocalPath?: string;
+    force?: boolean;
+    embeddings?: boolean;
+  };
+  const runAnalyzePipeline = (
+    job: ReturnType<typeof jobManager.createJob>,
+    opts: AnalyzePipelineOpts,
+  ): void => {
+    const { repoUrl, repoLocalPath, force, embeddings } = opts;
+    // Mark as active synchronously to prevent race with concurrent requests
+    jobManager.updateJob(job.id, { status: 'cloning' });
 
-      // Input type validation
-      if (repoUrl !== undefined && typeof repoUrl !== 'string') {
-        res.status(400).json({ error: '"url" must be a string' });
-        return;
-      }
-      if (repoLocalPath !== undefined && typeof repoLocalPath !== 'string') {
-        res.status(400).json({ error: '"path" must be a string' });
-        return;
-      }
-
-      if (!repoUrl && !repoLocalPath) {
-        res.status(400).json({ error: 'Provide "url" (git URL) or "path" (local path)' });
-        return;
-      }
-
-      // Path validation: require absolute path, reject traversal (e.g. /tmp/../etc/passwd)
-      if (repoLocalPath) {
-        if (!path.isAbsolute(repoLocalPath)) {
-          res.status(400).json({ error: '"path" must be an absolute path' });
-          return;
-        }
-        if (path.normalize(repoLocalPath) !== path.resolve(repoLocalPath)) {
-          res.status(400).json({ error: '"path" must not contain traversal sequences' });
-          return;
-        }
-      }
-
-      const job = jobManager.createJob({ repoUrl, repoPath: repoLocalPath });
-
-      // If job was already running (dedup), just return its id
-      if (job.status !== 'queued') {
-        res.status(202).json({ jobId: job.id, status: job.status });
-        return;
-      }
-
-      // Mark as active synchronously to prevent race with concurrent requests
-      jobManager.updateJob(job.id, { status: 'cloning' });
-
-      // Start async work — don't await
-      (async () => {
+    // Start async work — don't await
+    (async () => {
         let targetPath = repoLocalPath;
         try {
           // Clone if URL provided
@@ -1352,6 +1326,49 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           });
         }
       })();
+  };
+
+  // POST /api/analyze — start a new analysis job
+  app.post('/api/analyze', async (req, res) => {
+    try {
+      const { url: repoUrl, path: repoLocalPath, force, embeddings } = req.body;
+
+      // Input type validation
+      if (repoUrl !== undefined && typeof repoUrl !== 'string') {
+        res.status(400).json({ error: '"url" must be a string' });
+        return;
+      }
+      if (repoLocalPath !== undefined && typeof repoLocalPath !== 'string') {
+        res.status(400).json({ error: '"path" must be a string' });
+        return;
+      }
+
+      if (!repoUrl && !repoLocalPath) {
+        res.status(400).json({ error: 'Provide "url" (git URL) or "path" (local path)' });
+        return;
+      }
+
+      // Path validation: require absolute path, reject traversal (e.g. /tmp/../etc/passwd)
+      if (repoLocalPath) {
+        if (!path.isAbsolute(repoLocalPath)) {
+          res.status(400).json({ error: '"path" must be an absolute path' });
+          return;
+        }
+        if (path.normalize(repoLocalPath) !== path.resolve(repoLocalPath)) {
+          res.status(400).json({ error: '"path" must not contain traversal sequences' });
+          return;
+        }
+      }
+
+      const job = jobManager.createJob({ repoUrl, repoPath: repoLocalPath });
+
+      // If job was already running (dedup), just return its id
+      if (job.status !== 'queued') {
+        res.status(202).json({ jobId: job.id, status: job.status });
+        return;
+      }
+
+      runAnalyzePipeline(job, { repoUrl, repoLocalPath, force, embeddings });
 
       res.status(202).json({ jobId: job.id, status: job.status });
     } catch (err: any) {
@@ -1361,6 +1378,20 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         res.status(500).json({ error: err.message || 'Failed to start analysis' });
       }
     }
+  });
+
+  // P1: webhook 路由 — 仅当 GITNEXUS_WEBHOOK_SECRET 已配置时挂载
+  mountWebhookRoutes(app, {
+    githubSecret: process.env.GITNEXUS_WEBHOOK_SECRET,
+    trigger: async (event) => {
+      // 复用 JobManager dedup（Fix-3）+ 共用 fork pipeline
+      const job = jobManager.createJob({ repoUrl: event.cloneUrl });
+      if (job.status !== 'queued') {
+        return { jobId: job.id, status: job.status, reason: 'dedup' };
+      }
+      runAnalyzePipeline(job, { repoUrl: event.cloneUrl });
+      return { jobId: job.id, status: job.status, reason: 'fresh' };
+    },
   });
 
   // GET /api/analyze/:jobId — poll job status
@@ -1565,6 +1596,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     const server = app.listen(port, host, () => {
       const displayHost = host === '::' || host === '0.0.0.0' ? 'localhost' : host;
       console.log(`GitNexus server running on http://${displayHost}:${port}`);
+      if (process.env.GITNEXUS_WEBHOOK_SECRET) {
+        console.log(
+          `  webhook  POST http://${displayHost}:${port}/webhook/github (HMAC sha256)`,
+        );
+      }
       resolve();
     });
     server.on('error', (err) => reject(err));
