@@ -744,6 +744,51 @@ GitNexus emits scaffolds Stage 6 K8s preview env can mount + run.`,
     },
   },
   {
+    name: 'validate_in_preview',
+    description:
+      'Stage 6 (异步, R-3)：把候选 fix 镜像跑进临时 K8s namespace 跑测试。立刻返回 jobId（spinUp + test 通常 3-5 分钟），用 check_preview_status 轮询。namespace 强制 gitnexus-preview- 前缀，绝不影响生产。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        service_image: {
+          type: 'string',
+          description: '候选 fix 的服务镜像（已经存在于可拉的 registry）',
+        },
+        service_name: {
+          type: 'string',
+          description: 'Deployment / Service 的 name (k8s 合规小写)',
+        },
+        service_port: { type: 'number', description: '默认 80' },
+        test_image: { type: 'string', description: '测试 runner 容器镜像' },
+        test_command: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '测试容器启动命令；推荐让测试容器把 JUnit XML 包在 ===JUNIT-XML=== / ===END-JUNIT-XML=== marker 内打到 stdout',
+        },
+        junit_output_path: {
+          type: 'string',
+          description: '保留字段 — 当前 collector 走 stdout marker 不读文件',
+        },
+        ttl_seconds: { type: 'number', description: 'preview namespace TTL，默认 1800 (30min)' },
+        repo: { type: 'string', description: 'Optional repo selector' },
+      },
+      required: ['service_image', 'service_name', 'test_image', 'test_command'],
+    },
+  },
+  {
+    name: 'check_preview_status',
+    description:
+      'Stage 6 (R-3)：查 validate_in_preview 返回的 jobId 当前状态。状态机：queued → spinning_up → running_tests → collecting → done|failed。done 时同时返回 testResult (含 JUnit 详情)。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        job_id: { type: 'string', description: 'validate_in_preview 返回的 jobId' },
+        repo: { type: 'string', description: 'Optional repo selector' },
+      },
+      required: ['job_id'],
+    },
+  },
+  {
     name: 'run_pipeline',
     description:
       'Agentic DevOps 横切：把 spans 一次喂入 4 阶段（resolve_span → api_blast_radius → regression_forensics → gen_e2e_tests），返回逐 stage 结果 + 总耗时；S6/S7 现阶段 stub。',

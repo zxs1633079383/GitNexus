@@ -736,6 +736,10 @@ export class LocalBackend {
         return this.genE2ETests(repo, params as Record<string, unknown>);
       case 'run_pipeline':
         return this.runPipeline(repo, params as Record<string, unknown>);
+      case 'validate_in_preview':
+        return this.validateInPreview(repo, params as Record<string, unknown>);
+      case 'check_preview_status':
+        return this.checkPreviewStatus(repo, params as Record<string, unknown>);
       default:
         throw new Error(`Unknown tool: ${method}`);
     }
@@ -3997,6 +4001,40 @@ export class LocalBackend {
       ...baseParams,
       direction: direction === 'upstream' ? 'upstream' : 'downstream',
     });
+  }
+
+  // S6 · 异步 preview job (R-3): 立即返回 jobId，用 check_preview_status 轮询。
+  // PreviewJobManager 是进程级单例（懒初始化）。
+  private previewJobManager?: import('../../core/preview/preview-job-manager.js').PreviewJobManager;
+
+  private async getPreviewJobManager(): Promise<
+    import('../../core/preview/preview-job-manager.js').PreviewJobManager
+  > {
+    if (!this.previewJobManager) {
+      const { PreviewJobManager } = await import(
+        '../../core/preview/preview-job-manager.js'
+      );
+      this.previewJobManager = new PreviewJobManager();
+    }
+    return this.previewJobManager;
+  }
+
+  private async validateInPreview(
+    _repo: RepoHandle,
+    params: Record<string, unknown>,
+  ): Promise<unknown> {
+    const { validateInPreview } = await import('../../core/preview/mcp-handlers.js');
+    const mgr = await this.getPreviewJobManager();
+    return validateInPreview(mgr, params);
+  }
+
+  private async checkPreviewStatus(
+    _repo: RepoHandle,
+    params: Record<string, unknown>,
+  ): Promise<unknown> {
+    const { checkPreviewStatus } = await import('../../core/preview/mcp-handlers.js');
+    const mgr = await this.getPreviewJobManager();
+    return checkPreviewStatus(mgr, params);
   }
 
   // 横切 · run_pipeline — 串 S2 → S3 → S4 → S5 一条 dry-run。
