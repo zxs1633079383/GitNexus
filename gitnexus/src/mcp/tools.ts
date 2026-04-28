@@ -561,4 +561,76 @@ pipeline (RULES §0.4 LLM-boundary equivalent).`,
       required: ['span'],
     },
   },
+  // ─── Stage 3 · Blast Radius (Agentic DevOps wrapper) ────────────────
+  // 复用 OSS 已有 impact()，给 Agentic DevOps caller 一个语义化、有 sensible
+  // defaults 的入口。roadmap §3 锚点工具：「X 改动会影响 Y」必须有确定性
+  // 图谱在背后撑着 — 这是闭环可信任性的 anchor。
+  {
+    name: 'api_blast_radius',
+    description: `Compute the blast radius of changing a code symbol — Agentic DevOps wrapper around impact().
+
+Wraps GitNexus impact() with sensible defaults tuned for the 7-stage Agentic
+DevOps loop: depth=2 (direct + indirect), cross_depth=1 (one cross-repo hop).
+Stage 4 (P5 Auto Regression Forensics) consumes this to compute
+suspects = recent commits ∩ blast radius.
+
+DIRECTION:
+- 'downstream' (default): what depends on this symbol → which sites break if it changes
+- 'upstream':              what this symbol depends on
+- 'both':                  union of both directions, deduped by uid
+
+WHY a thin wrapper instead of just calling impact()? Same reason MCP exposes
+api_impact: callers should see one Agentic DevOps verb ("blast radius") with
+locked-in defaults, not have to re-derive depth/cross_depth conventions per call.
+
+OUTPUT: same shape as impact() — risk / summary / affected_processes /
+affected_modules / byDepth — but always with depth=2 + cross_depth=1 unless
+overridden.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: { type: 'string', description: 'Name of function, class, or file to analyze' },
+        target_uid: {
+          type: 'string',
+          description: 'Direct symbol UID (zero-ambiguity lookup, skips name resolution)',
+        },
+        file_path: { type: 'string', description: 'File path hint to disambiguate common names' },
+        kind: {
+          type: 'string',
+          description: "Kind filter: 'Function' | 'Class' | 'Method' | 'Interface' | 'Constructor'",
+        },
+        direction: {
+          type: 'string',
+          enum: ['upstream', 'downstream', 'both'],
+          description: 'Default: downstream (what depends on this)',
+          default: 'downstream',
+        },
+        depth: {
+          type: 'number',
+          description: 'Local traversal depth (default: 2; Agentic DevOps baseline)',
+          default: 2,
+          minimum: 1,
+          maximum: 32,
+        },
+        cross_depth: {
+          type: 'number',
+          description: 'Cross-repo hops via contract bridge (default: 1)',
+          default: 1,
+          minimum: 1,
+          maximum: 32,
+        },
+        relationTypes: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional filter — same set as impact()',
+        },
+        includeTests: { type: 'boolean', description: 'Include test files (default: false)' },
+        repo: {
+          type: 'string',
+          description: 'Repository name or path. Omit if only one repo is indexed.',
+        },
+      },
+      required: [],
+    },
+  },
 ];

@@ -181,6 +181,55 @@ function logQueryTiming(query: string, phases: Record<string, number>): void {
   );
 }
 
+/**
+ * Stage 3 helper: merge two impact() results (upstream + downstream) for
+ * api_blast_radius direction='both'. Dedupes byDepth entries by uid, takes the
+ * tighter risk level when两侧 disagree, and concatenates affected_processes /
+ * affected_modules. Keeps the return shape compatible with impact().
+ */
+function mergeBlastRadius(up: any, down: any): any {
+  if (up?.error) return down;
+  if (down?.error) return up;
+  const RISK_RANK: Record<string, number> = { LOW: 1, MEDIUM: 2, HIGH: 3, CRITICAL: 4 };
+  const pickRisk = (a: string, b: string) =>
+    (RISK_RANK[a] ?? 0) >= (RISK_RANK[b] ?? 0) ? a : b;
+
+  const byDepth: Record<string, any[]> = {};
+  for (const src of [up?.byDepth, down?.byDepth]) {
+    if (!src) continue;
+    for (const [d, items] of Object.entries(src)) {
+      const arr = (byDepth[d] = byDepth[d] || []);
+      const seen = new Set(arr.map((i: any) => i.uid ?? i.id));
+      for (const it of items as any[]) {
+        const uid = (it as any).uid ?? (it as any).id;
+        if (!seen.has(uid)) {
+          arr.push(it);
+          seen.add(uid);
+        }
+      }
+    }
+  }
+
+  return {
+    direction: 'both',
+    target: up?.target ?? down?.target,
+    risk: pickRisk(up?.risk ?? 'LOW', down?.risk ?? 'LOW'),
+    summary: {
+      ...(up?.summary ?? {}),
+      ...(down?.summary ?? {}),
+      upstreamCount: up?.impactedCount ?? 0,
+      downstreamCount: down?.impactedCount ?? 0,
+    },
+    impactedCount: (up?.impactedCount ?? 0) + (down?.impactedCount ?? 0),
+    affected_processes: [
+      ...(up?.affected_processes ?? []),
+      ...(down?.affected_processes ?? []),
+    ],
+    affected_modules: [...(up?.affected_modules ?? []), ...(down?.affected_modules ?? [])],
+    byDepth,
+  };
+}
+
 export interface CodebaseContext {
   projectName: string;
   stats: {
@@ -679,6 +728,8 @@ export class LocalBackend {
         return this.apiImpact(repo, params);
       case 'resolve_span':
         return this.resolveSpanToHandler(repo, params as { span: any });
+      case 'api_blast_radius':
+        return this.apiBlastRadius(repo, params as Record<string, unknown>);
       default:
         throw new Error(`Unknown tool: ${method}`);
     }
@@ -3699,6 +3750,45 @@ export class LocalBackend {
       resolvedBy: 'none',
       errorEvent: norm.errorEvent,
     };
+  }
+
+  // ─── Stage 3 · Blast Radius wrapper (Agentic DevOps anchor) ────
+  //
+  // 薄编排层: 给 caller 一组锁定的默认值 (depth=2 / cross_depth=1) 并支持
+  // direction='both' 合并 upstream + downstream。底层完全复用 impact() —— 也即
+  // RULES §0.2 强调的"代码真相层"，不调 LLM、不做概率匹配。
+  private async apiBlastRadius(
+    repo: RepoHandle,
+    params: Record<string, unknown>,
+  ): Promise<any> {
+    const direction = (params.direction as string | undefined) ?? 'downstream';
+    const depth = (params.depth as number | undefined) ?? 2;
+    const crossDepth = (params.cross_depth as number | undefined) ?? 1;
+
+    const baseParams = {
+      target: params.target as string,
+      target_uid: params.target_uid as string | undefined,
+      file_path: params.file_path as string | undefined,
+      kind: params.kind as string | undefined,
+      maxDepth: depth,
+      crossDepth,
+      relationTypes: params.relationTypes as string[] | undefined,
+      includeTests: params.includeTests as boolean | undefined,
+      minConfidence: params.minConfidence as number | undefined,
+    };
+
+    if (direction === 'both') {
+      const [up, down] = await Promise.all([
+        this.impact(repo, { ...baseParams, direction: 'upstream' }),
+        this.impact(repo, { ...baseParams, direction: 'downstream' }),
+      ]);
+      return mergeBlastRadius(up, down);
+    }
+
+    return this.impact(repo, {
+      ...baseParams,
+      direction: direction === 'upstream' ? 'upstream' : 'downstream',
+    });
   }
 
   // ─── Direct Graph Queries (for resources.ts) ────────────────────

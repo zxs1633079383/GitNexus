@@ -6,7 +6,7 @@ flowchart TB
     ISSUE[/"📋 GitHub/GitLab Issue<br/>traceId + service + 路径"/]:::external
     PRE["⚙️ pre · P1 Auto-reindex Webhook<br/>校验 last commit vs 索引快照"]:::new
     S2["🎯 2.锚点 · Phase 0 Trace2Code Resolver<br/>Jaeger/OTel 双格式 + 5 层 fallback + stacktrace ✅"]:::existing
-    S3["💥 3.爆炸 · GitNexus blast radius<br/>impact depth=2 crossDepth=1"]:::existing
+    S3["💥 3.爆炸 · GitNexus blast radius<br/>api_blast_radius depth=2 crossDepth=1 ✅"]:::existing
     S4["🔬 4.溯源 · P5 Auto Regression Forensics<br/>git log ∩ blast radius"]:::new
     S5["🧪 5.生成 · P4 E2E Test Generator<br/>unit + contract + integration"]:::new
     S6["🚀 6.执行 · K8s Preview Env Spinner<br/>注入回滚版 + 跑 test"]:::new
