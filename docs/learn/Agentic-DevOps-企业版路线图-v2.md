@@ -15,67 +15,99 @@
 
 GitNexus 在这个目标里扮演**确定性知识基础设施**——给 Agent 提供"代码的真相"，是闭环里**唯一不靠 LLM 的层**。上层编排会抖动、观测会缺失、LLM 输出会幻觉，但 GitNexus 给的"X 改动会影响 Y"是**索引时算好的事实**，可以被 Agent 当作硬约束信任。
 
-### 0.2 运行时闭环 —— 巡检 → 归一化 → 取证 → 反馈
+### 0.2 运行时闭环 —— /observe 触发的全自动取证管线
 
-> 编码侧的 coding 闭环（brainstorm / plan / exec / review / ship）由独立的编排系统主导，不在本路线图范围。
-> **本 v2 路线图聚焦运行时侧**：业务出错 → trace → 取证 → 反馈给开发者 / 编排修复 / 蒸馏成 Skill。
+> 编码侧 coding 闭环（brainstorm / plan / exec / review / ship）由独立编排系统主导，**不在本路线图范围**。
+> **本 v2 路线图聚焦运行时侧全自动管线**：/observe 巡检发现异常 → 自动建 Issue → GitNexus 串联 5 步分析 → 评论可配置（默认 MR）。
 
 ```
-   业务 app（OTel auto-instrument，业务零侵入）
-         │ 发 spans
-         ▼
-   Jaeger（trace 后端存储）
-         │ ① 巡检发现 error / 高响应时间
-         ▼
-   失败 trace span
-   （http.route / url.path / exception.stacktrace 三件套）
-         │ ② 推给 GitNexus（被动推模式，caller POST）
-         ▼
-   ┌──────────────────────────────────┐
-   │ Phase 0  Jaeger Span Normalizer  │ ③ 归一化
-   │ - Jaeger tags[] ↔ OTel attrs{}   │   双格式自动 detect
-   │ - 5 层 HTTP fallback             │   多版本 OTel conv
-   │ - stacktrace 顶帧反查（独有）    │   异常栈兜底
-   └──────────────┬───────────────────┘
-                  │ handler symbol UID
-                  ▼
-   ┌──────────────────────────────────┐
-   │ P5 Auto Regression Forensics     │ ④ 取证
-   │ - impact(handler, upstream)      │   反向 BFS（谁依赖我）
-   │ - impact(handler, downstream)    │   下游波及面
-   │ - detect_changes(HEAD~N..HEAD)   │   近期变更符号
-   │ - 文件路径过滤（防误报）         │   只交叉 handler 所在文件
-   │ - 时间近度 × confidence 排序      │   嫌疑度打分
-   └──────────────┬───────────────────┘
-                  │ 嫌疑提交清单
-                  ▼
-       commit hash + 改了哪个 method + 距 trace 时间多久
-                  │
-                  ├─► ⑤a 推给开发者：直接定位修复点
-                  ├─► ⑤b 推给 coding 编排：自动开 fix 分支
-                  └─► ⑤c 喂 Trace2Skill：蒸馏成"如何排查 X 类故障"Skill
+═══════════════════════════════════════════════════════════════
+START：/observe 巡检触发（外部）
+═══════════════════════════════════════════════════════════════
 
-   闭环咬合：修复 ship 后 → 新一轮巡检验证 → 重复
+   /observe 巡检（定期 cron / 手动触发）
+         │ 监听 Jaeger / Prometheus / 日志
+         ▼
+   ① 发现异常：error trace 或 高响应时间 span
+         │
+         ▼
+   ② 自动建 GitHub/GitLab Issue
+      （body 含 traceId + service + 路径 + 时间窗）
+         │ webhook
+         ▼
+
+═══════════════════════════════════════════════════════════════
+GitNexus 自动管线（本路线图核心）—— 5 步串联
+═══════════════════════════════════════════════════════════════
+
+   ┌─ Step A · P1 Auto-reindex Webhook ───────────────────────┐
+   │ 收到 issue.opened 事件                                    │
+   │ 校验目标仓 last commit vs 索引快照                        │
+   │ stale → 跑 gitnexus analyze（staleness 早退保证幂等）    │
+   │ fresh → 跳过                                              │
+   └──────────────┬───────────────────────────────────────────┘
+                  ▼ 确保后续步骤的图最新
+   ┌─ Step B · Phase 0  Jaeger Span Normalizer ───────────────┐
+   │ 从 Issue body 取 traceId → 拉 Jaeger /api/traces/<id>   │
+   │ 双格式归一（Jaeger tags[] / OTel attrs{}）              │
+   │ 5 层 HTTP fallback + stacktrace 顶帧反查                 │
+   └──────────────┬───────────────────────────────────────────┘
+                  ▼ handler symbol UID
+   ┌─ Step C · P5 Auto Regression Forensics ──────────────────┐
+   │ impact(handler, upstream/downstream)                      │
+   │ ∩ detect_changes(HEAD~N..HEAD)                           │
+   │ ∩ handler 文件路径过滤（防误报）                          │
+   │ rank by 时间近度 × confidence                            │
+   └──────────────┬───────────────────────────────────────────┘
+                  ▼ 嫌疑提交清单 Top 3（commit + method + 时间）
+   ┌─ Step D · 跨仓影响检查（contract registry）─────────────┐
+   │ handler 是否暴露为 provider contract？                    │
+   │ runGroupImpact（crossDepth=1 默认；P2 后扩到 N）         │
+   └──────────────┬───────────────────────────────────────────┘
+                  ▼ 跨仓波及面 + 风险等级（LOW/MEDIUM/HIGH/CRITICAL）
+   ┌─ Step E · P3 Auto Wiki 刷新（增量）──────────────────────┐
+   │ handler 所在文件 / community 是否已变更？                 │
+   │ 触发增量 wiki 重生成（embedding 哈希复用 + LLM cache）   │
+   └──────────────┬───────────────────────────────────────────┘
+                  ▼ 最新代码 wiki 链接
+
+═══════════════════════════════════════════════════════════════
+END：评论输出（per-repo 可配置）
+═══════════════════════════════════════════════════════════════
+
+   .gitnexus/comment-policy.yaml
+   ─────────────────────────────────────────
+   forensics:
+     comment_targets:
+       - mr           # 默认：评论到关联 MR/PR
+     # - issue        # 可选：评论原 Issue
+     # - notify_dev   # 可选：@开发者 / Slack / 邮件
+     # - trace2skill  # 可选：写入故障排查 Skill 训练集
+
+   评论内容：
+   - 🔴 风险等级 + 一句话总结
+   - 嫌疑提交 Top 3（commit + method + 时间）
+   - 跨仓波及（下游服务清单 + 接口）
+   - 相关 wiki 区段链接（最新生成）
+   - Jaeger trace 原始 span 链接（溯源）
 ```
 
-**GitNexus 在这条链上的位置**：从"trace span 抵达 GitNexus"那一刻开始，**全程确定性反查**——
-不调 LLM，不做概率匹配，每一步都基于索引时算好的事实图谱。caller 拿到的"嫌疑提交"不是猜的，
-是图上**真实存在的依赖边**。
+**GitNexus 在这条管线上的位置**：从 "Issue webhook 抵达"那一刻开始，**Step A-E 全程确定性反查**——
+不调 LLM，不做概率匹配。caller 收到的"嫌疑提交 + 跨仓波及 + wiki 链接"是图谱事实，不是 AI 猜测。
+**只有 Step E 内部的 wiki 文案生成可能用 LLM**（已存在能力，复用 cache）。
 
-### 0.3 用户描绘的 ideal state
+### 0.3 五步管线对应的功能映射
 
-> 巡检发现 error / 高响应时间 → 跨仓分析 → 对应 TestCase / 测试集合
-
-具体到 GitNexus 能力：
-
-| 闭环步骤 | 落地功能 | 当前状态 |
-|---|---|---|
-| 巡检发现 error（Jaeger 已能做） | OTel auto-instrument + Jaeger Query API | ✅ 已有（业务零侵入） |
-| Trace span → handler symbol UID | **Phase 0 Jaeger Span Normalizer** | 🟡 本路线图新增 |
-| 自动定位"哪个 commit / 哪条调用路径感染" | **P5 Auto Regression Forensics** | 🟡 本路线图核心 |
-| 跨多个仓追踪传染源（不止 1 跳） | **P2 Multi-hop crossDepth>1** | 🟡 并行线 |
-| 触发 → 自动重织受影响仓的图 | **P1 Auto-reindex Webhook** | 🟡 关键路径 |
-| 拿到调用链 → 生成对应 TestCase | **P4 E2E Test Generation** | 🟡 并行线 |
+| Step | 闭环步骤 | 落地功能 | 当前状态 |
+|---|---|---|---|
+| START | /observe 巡检发现异常 → 建 Issue | `/observe` skill + Jaeger 监听 | ✅ 已有（外部，业务零侵入） |
+| A | Issue webhook → 自动重织最新图 | **P1 Auto-reindex Webhook** | 🟡 关键路径 |
+| B | Trace span → handler symbol UID | **Phase 0 Jaeger Span Normalizer** | 🟡 本路线图新增 |
+| C | 定位嫌疑提交（commit + method） | **P5 Auto Regression Forensics** | 🟡 本路线图核心 |
+| D | 跨仓波及面（contract registry） | crossDepth=1 已有 → **P2 Multi-hop** 加深度 | 🟡 D 默认能跑，P2 是增强 |
+| E | 相关代码 wiki 增量刷新 | **P3 Auto Wiki 刷新** | 🟡 顺手挂 P1 |
+| END | 评论可配置（默认 MR） | **comment-policy.yaml + Pipeline Orchestrator** | 🟡 本路线图新增（薄编排层）|
+| 异步 | 调用链 → TestCase 生成 | **P4 E2E Test Generation** | 🟡 并行线（不阻塞主管线） |
 
 ---
 
@@ -84,11 +116,13 @@ GitNexus 在这个目标里扮演**确定性知识基础设施**——给 Agent 
 | 功能 | Pri | 状态 | 备注 |
 |---|---|---|---|
 | **PR Review Bot** | P0 | ✅ 已上线 | 含 `crossDepth=1` 跨仓影响分析；GitHub App `gitnexus-pr-reviewer-zxs` 已发布 |
-| Auto-reindex Webhook | P1 | 🟡 未做 | 关键路径 |
-| Auto Regression Forensics | P5 | 🟡 未做 | 关键路径核心 |
-| Multi-hop crossDepth>1 | P2 | 🟡 未做 | 并行线（不阻塞 P5） |
-| Auto Wiki 刷新 | P3 | 🟡 未做 | 顺手挂 P1 |
-| E2E Test Generation | P4 | 🟡 未做 | 并行线 |
+| Auto-reindex Webhook | P1 | 🟡 未做 | 关键路径（Step A）|
+| Phase 0 Jaeger Span Normalizer | — | 🟡 未做 | 关键路径（Step B），P5 前置 enabler |
+| Auto Regression Forensics | P5 | 🟡 未做 | 关键路径核心（Step C）|
+| Multi-hop crossDepth>1 | P2 | 🟡 未做 | 并行线（Step D 增强，不阻塞主管线） |
+| Auto Wiki 刷新 | P3 | 🟡 未做 | 关键路径（Step E），顺手挂 P1 |
+| **Pipeline Orchestrator + Comment Policy** | — | 🟡 未做 | 关键路径（END），薄编排层把 A-E 串联 + 评论目标可配置 |
+| E2E Test Generation | P4 | 🟡 未做 | 并行线（异步，不阻塞主管线）|
 | OCaml LanguageProvider | P6 | 🟡 未做 | 并行线 |
 
 ---
@@ -99,29 +133,38 @@ GitNexus 在这个目标里扮演**确定性知识基础设施**——给 Agent 
 
 ```
 ═══════════════════════════════════════════════════════════════
-关键路径（串行，3.5 周闭环跑通）：
+关键路径（串行，4 周端到端跑通 START → END）：
 ═══════════════════════════════════════════════════════════════
 
-Phase 0  Jaeger Span Normalizer（1 周）
+P1  Auto-reindex Webhook（1 周）              ← Step A
+   │   webhook server + job-queue（含同 repo 去重）
    │
    ▼
-P1  Auto-reindex Webhook（1 周）
-   │
-   ├──► P3 Auto Wiki 顺手挂同 webhook（半周）
+Phase 0  Jaeger Span Normalizer（1 周）       ← Step B
+   │   双格式归一 + 5 层 fallback + stacktrace 兜底
    │
    ▼
-P5  Auto Regression Forensics（1 周）
+P5  Auto Regression Forensics（1 周）          ← Step C
+   │   impact ∩ detect_changes ∩ 文件路径过滤
+   │
+   ├─► Step D 跨仓波及（crossDepth=1 已有，复用 contract registry，~0 周）
+   │
+   ├─► P3 Auto Wiki 刷新（半周）               ← Step E
+   │
+   ▼
+Pipeline Orchestrator + Comment Policy（半周） ← END
+       串联 A-E + comment-policy.yaml + 评论渲染器
 
 ═══════════════════════════════════════════════════════════════
-并行线（互不阻塞，1.5-2 周）：
+并行线（互不阻塞主管线）：
 ═══════════════════════════════════════════════════════════════
 
-P2  Multi-hop crossDepth>1（1.5 周）
-P4  E2E Test Gen 选 B 外挂（1.5 周）
+P2  Multi-hop crossDepth>1（1.5 周）           ← Step D 增强
+P4  E2E Test Gen 选 B 外挂（1.5 周）          ← 异步分支
 P6  OCaml LanguageProvider（2 周）
 
 ═══════════════════════════════════════════════════════════════
-总工期：单人 5.5 周 / 双人 3.5 周
+总工期：单人 4-6 周 / 双人 3-4 周
 ═══════════════════════════════════════════════════════════════
 ```
 
@@ -309,18 +352,67 @@ async function regressionForensics(spans: NormalizedSpan[], opts) {
 | Provider 注册 | `gitnexus/src/core/ingestion/languages/index.ts` | `satisfies` 编译期校验 | 🔧 +1 |
 | 不进 RFC #909 | `gitnexus/src/scope-resolution/registry-primary-flag.ts:67` | `MIGRATED_LANGUAGES` 不动 | ♻️ 不动 |
 
+### 3.8 Pipeline Orchestrator + Comment Policy（END 节点）
+
+**目标**：薄编排层把 Step A-E 串联，结果按 per-repo `comment-policy.yaml` 路由到 MR / Issue / 通知 / Trace2Skill。
+
+**为什么独立**：A-E 每个都是单一职责的 primitive，**编排逻辑**（顺序、错误兜底、超时、并发、评论目标选择）是横切关注点，剥出来便于单测 + 不同触发源（Issue webhook / 手动 CLI / 定时巡检）共用。
+
+| 角色 | 文件 | 职责 | 状态 |
+|---|---|---|---|
+| 主编排器 | `gitnexus/src/server/pipeline/forensics-orchestrator.ts` | A-E 串联 + 每步超时 + 整体 deadline + 并发限制 | 🆕 (~180) |
+| Issue webhook handler | `gitnexus/src/server/webhook-handlers/issue-handler.ts` | 接 issue.opened → 解析 traceId → 触发主编排器 | 🆕 (~100) |
+| Trace 拉取器 | `gitnexus/src/core/observability/jaeger-client.ts` | 主动拉 `/api/traces/<id>`（caller 没推 span 时）| 🆕 (~80) |
+| 评论策略加载器 | `gitnexus/src/server/pipeline/comment-policy.ts` | 读 `.gitnexus/comment-policy.yaml`，per-repo 缓存 | 🆕 (~60) |
+| 评论渲染器 | `gitnexus/src/server/pipeline/comment-renderer.ts` | 拼 markdown：风险 + Top 3 + 跨仓 + wiki 链接 + trace 链接 | 🆕 (~120) |
+| 评论分发器 | `gitnexus/src/server/pipeline/comment-dispatcher.ts` | 按 policy 路由到 MR / Issue / Slack / Trace2Skill 训练集 | 🆕 (~100) |
+| 配置 schema | `gitnexus/.gitnexus/comment-policy.yaml.example` | 给用户的模板 + 注释 | 🆕 |
+
+**comment-policy.yaml 字段**：
+
+```yaml
+forensics:
+  comment_targets:
+    - mr           # 默认：评论关联 MR/PR
+    # - issue        # 评论原 Issue
+    # - notify_dev   # @ 嫌疑提交作者
+    # - trace2skill  # 写训练集
+
+  thresholds:
+    min_confidence: 0.6      # 嫌疑度低于此值不评论
+    risk_floor: MEDIUM       # 仅 MEDIUM 及以上评论
+
+  rendering:
+    show_top_n: 3
+    include_stacktrace: true
+    include_cross_impact: true
+    include_wiki_link: true
+```
+
+**触发源（共用主编排器）**：
+
+| 触发 | 入口 | 用途 |
+|---|---|---|
+| Issue webhook | `issue-handler.ts` | START 主路径（/observe 巡检建的 Issue） |
+| 手动 CLI | `gitnexus forensics --trace-id <id>` | 开发者本地调试 |
+| 定时巡检 | cron → 内部 HTTP | 例行扫近 N 小时高响应时间 trace |
+
 ---
 
 ## 4. 工时
 
 | 阶段 | 周数 | 备注 |
 |---|---|---|
-| Phase 0 | 1 周 | 含 stacktrace 解析器 + 双归一函数 |
-| P1 + P3 顺手 | 1.5 周 | webhook + queue + wiki handler |
-| P5 | 1 周 | 不依赖 P2 |
-| **关键路径小计** | **3.5 周** | 闭环跑通 |
-| P2 / P4 / P6 并行 | 1.5-2 周 | 同期开三条独立分支 |
-| **总工期** | **3.5 - 5.5 周** | 单人 / 双人节奏 |
+| P1 Auto-reindex Webhook（Step A） | 1 周 | webhook server + job-queue（同 repo 去重） |
+| Phase 0 Jaeger Span Normalizer（Step B） | 1 周 | 含 stacktrace 解析器 + 双归一函数 |
+| P5 Auto Regression Forensics（Step C） | 1 周 | 不依赖 P2，crossDepth=1 已够用 |
+| P3 Auto Wiki 刷新（Step E） | 半周 | 顺手挂 P1 webhook |
+| Pipeline Orchestrator + Comment Policy（END） | 半周 | 串联 A-E + comment-policy.yaml + 评论分发 |
+| **关键路径小计** | **4 周** | START → END 端到端跑通 |
+| P2 Multi-hop crossDepth>1 | 1.5 周 | 并行（Step D 增强） |
+| P4 E2E Test Gen 选 B | 1.5 周 | 并行（异步分支） |
+| P6 OCaml LanguageProvider | 2 周 | 并行 |
+| **总工期** | **4 - 6 周** | 单人 / 双人节奏 |
 
 ---
 
