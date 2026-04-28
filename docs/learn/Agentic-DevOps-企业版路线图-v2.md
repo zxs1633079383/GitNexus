@@ -2,7 +2,8 @@
 
 > 作者：GitNexus 核心维护者视角
 > 日期：2026-04-28
-> 状态：**review 通过**（gitnexus-knowledge 事实校对 + gitnexus-dev 独立评审，2 处硬 bug + 4 处细节修正已合入）
+> 状态：**主链路全 commit + tag 完成**（8 个 tag：phase-0 / stage-1/3/4/5/6/7 / pipeline，全部 R-1~R-18 review 修正点落地，R-2 显式标 backlog）
+> 收官缺口：① Pipeline Orchestrator 里 S6/S7 仍 stub；② 自动 PR 从未真发（dryRun 默认）；③ 4 项 backlog（P2/P3/P6/R-2）
 > 上一版：`docs/learn/PR-Review-Bot-方案.md`（2026-04-26，P0 PR Review Bot 已上线）
 
 ---
@@ -101,7 +102,7 @@ flowchart TB
    └──────────────────────┬─────────────────────────────┘
                           ▼ 确保 Stage 3-5 用最新图
 ═══════════════════════════════════════════════════════════════
-【2.锚点】 Trace2Code Resolver                         Phase 0 新增 🟡
+【2.锚点】 Trace2Code Resolver                         phase-0/v0.1.0 ✅
 ═══════════════════════════════════════════════════════════════
    trace span → handler symbol UID
    - Jaeger tags[] ↔ OTel attrs{} 双格式
@@ -121,7 +122,7 @@ flowchart TB
                                   │ 受感染范围 = blast radius
                                   ▼
 ═══════════════════════════════════════════════════════════════
-【4.溯源】 Auto Regression Forensics                   P5 新增 🟡
+【4.溯源】 Auto Regression Forensics                   stage-4/v0.1.0 ✅
         git log ∩ blast radius
 ═══════════════════════════════════════════════════════════════
    git log(HEAD~N..HEAD --format='%H %at') 拿近期变更 + 时间戳
@@ -130,7 +131,7 @@ flowchart TB
                                   │ 嫌疑提交 Top 3
                                   ▼ (commit + method + 时间)
 ═══════════════════════════════════════════════════════════════
-【5.生成】 E2E Test Generator                          P4 升级关键路径 🟡
+【5.生成】 E2E Test Generator                          stage-5/v0.1.0 ✅ (R-1 scaffold)
         unit + contract + integration
 ═══════════════════════════════════════════════════════════════
    沿 Process / STEP_IN_PROCESS / ENTRY_POINT_OF 走调用链
@@ -142,7 +143,7 @@ flowchart TB
                                   │ test files
                                   ▼
 ═══════════════════════════════════════════════════════════════
-【6.执行】 K8s preview env 跑测试                      部署侧新组件 🟡
+【6.执行】 K8s preview env 跑测试                      stage-6/v0.1.0 ✅ (R-3 异步)
 ═══════════════════════════════════════════════════════════════
    spin up preview env（vCluster / Argo CD / 自建 GitOps）
    - 注入嫌疑提交回滚版本
@@ -151,7 +152,7 @@ flowchart TB
                                   │ test result + 验证报告
                                   ▼
 ═══════════════════════════════════════════════════════════════
-【7.回写】 Auto-PR/MR (GitHub/GitLab)                  平台侧新组件 🟡
+【7.回写】 Auto-PR/MR (GitHub/GitLab)                  stage-7/v0.1.0 ✅ (R-4 双 App)
 ═══════════════════════════════════════════════════════════════
    组装：
    - fix proposal（基于 Stage 4 嫌疑提交的 revert 或 patch 草稿）
@@ -172,14 +173,14 @@ flowchart TB
 
 | Stage | 名称 | 落地组件 | 状态 |
 |---|---|---|---|
-| pre | 索引保鲜 | **P1 Auto-reindex Webhook** | 🟡 关键路径 |
+| pre | 索引保鲜 | **P1 Auto-reindex Webhook** | ✅ `stage-1/v0.1.0` (HMAC sha256 + dedup 复用) |
 | **1** | **观测** | `/observe` skill + Jaeger + Prom | ✅ 已有（外部，业务零侵入） |
-| **2** | **锚点** | **Phase 0 Trace2Code Resolver**（原名 Jaeger Span Normalizer）| 🟡 本路线图新增 |
-| **3** | **爆炸** | GitNexus `impact()` + contract registry（crossDepth=1）| ✅ OSS 已有，仅参数化包装 |
-| **4** | **溯源** | **P5 Auto Regression Forensics** | 🟡 本路线图核心 |
-| **5** | **生成** | **P4 E2E Test Generator**（升级关键路径，含 unit + contract + integration）| 🟡 本路线图新增 |
-| **6** | **执行** | K8s preview env spinner（vCluster / Argo CD / 自建 GitOps）| 🟡 部署侧新组件 |
-| **7** | **回写** | Auto-PR/MR creator + GitHub/GitLab API + comment-policy.yaml | 🟡 平台侧新组件 |
+| **2** | **锚点** | **Phase 0 Trace2Code Resolver**（原名 Jaeger Span Normalizer）| ✅ `phase-0/v0.1.0` (Jaeger/OTel 双格式 + 5 层 fallback) |
+| **3** | **爆炸** | GitNexus `impact()` + contract registry（crossDepth=1）| ✅ `stage-3/v0.1.0` (api_blast_radius 参数化包装) |
+| **4** | **溯源** | **P5 Auto Regression Forensics** | ✅ `stage-4/v0.1.0` (handler-file 过滤防误报) |
+| **5** | **生成** | **P4 E2E Test Generator**（升级关键路径，含 unit + contract + integration）| ✅ `stage-5/v0.1.0` (R-1 scaffold + TODO 占位) |
+| **6** | **执行** | K8s preview env spinner（vCluster / Argo CD / 自建 GitOps）| ✅ `stage-6/v0.1.0` (PreviewJobManager + ns 前缀守门 + R-3 异步 + R-15 JUnit) |
+| **7** | **回写** | Auto-PR/MR creator + GitHub/GitLab API + comment-policy.yaml | ✅ `stage-7/v0.1.0` (R-4 双 App + R-12 policy + R-14 patch-LLM 隔离) |
 
 **并行线（"团队自建版"完整性的一部分，不在 7 阶段主链路）**：
 
@@ -192,22 +193,23 @@ flowchart TB
 
 ---
 
-## 1. 现状（2026-04-28）
+## 1. 现状（2026-04-28 全闭环 commit + tag 完成）
 
 | 功能 | Pri | 状态 | 7 阶段对应 | 备注 |
 |---|---|---|---|---|
 | **PR Review Bot** | P0 | ✅ 已上线 | — | 含 `crossDepth=1` 跨仓影响分析；GitHub App `gitnexus-pr-reviewer-zxs` 已发布；不在 7 阶段闭环里 |
 | `/observe` skill + Jaeger + Prom | — | ✅ 已有 | **Stage 1** | 外部，业务零侵入 |
 | GitNexus `impact()` blast radius | — | ✅ OSS 已有 | **Stage 3** | 仅需参数化包装（depth=2, crossDepth=1）|
-| Auto-reindex Webhook | P1 | 🟡 未做 | **pre** | 索引保鲜，确保 Stage 3-5 用最新图 |
-| Phase 0 Trace2Code Resolver | — | 🟡 未做 | **Stage 2** | 原 Jaeger Span Normalizer 改名 |
-| Auto Regression Forensics | P5 | 🟡 未做 | **Stage 4** | git log ∩ blast radius |
-| E2E Test Generator | P4 | 🟡 未做 | **Stage 5** | **升级到关键路径**（unit + contract + integration） |
-| K8s preview env spinner | — | 🟡 未做 | **Stage 6** | 部署侧新组件（vCluster / Argo CD / 自建）|
-| Auto-PR/MR creator | — | 🟡 未做 | **Stage 7** | 平台侧新组件（GitHub/GitLab API）|
-| Multi-hop crossDepth>1 | P2 | 🟡 未做 | Stage 3 增强 | 并行线 |
-| Auto Wiki 刷新 | P3 | 🟡 未做 | side-effect | 搭 P1 webhook 顺风车 |
-| **Pipeline Orchestrator + Comment Policy** | — | 🟡 未做 | 横切 | 把 Stage 1→7 串成有错误兜底 / 超时 / 并发 / 评论分发的薄编排层 |
+| Auto-reindex Webhook | P1 | ✅ `stage-1/v0.1.0` | **pre** | HMAC sha256 + 复用 JobManager dedup（Fix-3）|
+| Phase 0 Trace2Code Resolver | — | ✅ `phase-0/v0.1.0` | **Stage 2** | Jaeger/OTel 双格式 + 5 层 HTTP fallback + stacktrace 兜底 |
+| Auto Regression Forensics | P5 | ✅ `stage-4/v0.1.0` | **Stage 4** | git log ∩ blast radius，handler-file 过滤防误报 |
+| E2E Test Generator | P4 | ✅ `stage-5/v0.1.0` | **Stage 5** | R-1 scaffold + TODO 占位（不调 LLM 生成断言）|
+| K8s preview env spinner | — | ✅ `stage-6/v0.1.0` | **Stage 6** | PreviewJobManager + ns 前缀守门 + R-3 异步 + R-15 JUnit |
+| Auto-PR/MR creator | — | ✅ `stage-7/v0.1.0` | **Stage 7** | R-4 双 App + R-12 policy + R-14 patch-LLM 隔离 + dryRun 默认 |
+| Multi-hop crossDepth>1 | P2 | 🟡 未做（独立增强） | Stage 3 增强 | 并行线，闭环不依赖 |
+| Auto Wiki 刷新 | P3 | 🟡 未做（独立增强） | side-effect | 搭 P1 webhook 顺风车 |
+| **Pipeline Orchestrator + Comment Policy** | — | ⚠️ 部分 `pipeline/v0.1.0` | 横切 | S2-S5 dry-run 已串；S6/S7 仍 `skipped` stub，未真接 |
+| Auto image-injector R-2 4 级降级 | — | 🟡 backlog | Stage 6 增强 | Harbor + 手工版本号场景 ROI 低 |
 | OCaml LanguageProvider | P6 | 🟡 未做 | — | 并行线 |
 
 ---
