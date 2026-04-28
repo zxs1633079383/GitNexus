@@ -810,7 +810,7 @@ GitNexus emits scaffolds Stage 6 K8s preview env can mount + run.`,
   {
     name: 'run_pipeline',
     description:
-      'Agentic DevOps 横切：把 spans 一次喂入 4 阶段（resolve_span → api_blast_radius → regression_forensics → gen_e2e_tests），返回逐 stage 结果 + 总耗时；S6/S7 现阶段 stub。',
+      'Agentic DevOps 7 阶段闭环 (收官版 v0.2): spans → S2 resolve_span → S3 api_blast_radius → S4 regression_forensics → S5 gen_e2e_tests → S6 validate_in_preview (异步轮询) → S7 auto_pr (默认 dryRun)。S6 需 preview {serviceImage,testCommand}; S7 需 prTarget {owner,repo,baseBranch}; 缺则该阶段 skipped。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -835,6 +835,14 @@ GitNexus emits scaffolds Stage 6 K8s preview env can mount + run.`,
         testLanguageHint: {
           type: 'string',
           description: 'gen_e2e_tests 语言提示；省略则按 handler-file 后缀推断。',
+        },
+        preview: {
+          type: 'object',
+          description: 'S6 输入: { serviceImage, testImage?, testCommand[], ttlSeconds?, pollTimeoutSec? }；缺省 → S6 skip',
+        },
+        prTarget: {
+          type: 'object',
+          description: 'S7 输入: { owner, repo, baseBranch, provider?, dryRun?, titlePrefix?, bodyHeader?, issueRef?, labels[]? }；缺省 → S7 skip',
         },
         repo: {
           type: 'string',

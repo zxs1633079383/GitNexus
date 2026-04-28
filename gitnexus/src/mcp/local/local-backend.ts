@@ -4084,8 +4084,9 @@ export class LocalBackend {
     });
   }
 
-  // 横切 · run_pipeline — 串 S2 → S3 → S4 → S5 一条 dry-run。
-  // S6 / S7 落地后在 orchestrator 内切换 stub → 真实调用。
+  // 横切 · run_pipeline (v0.2.0 收官版) — 串 S2-S7 全部真跑
+  // S6 接 PreviewJobManager + check_preview_status 异步轮询
+  // S7 接 auto_pr (默认 dryRun=true，需 GITNEXUS_AUTOPR_LIVE=1 才真发)
   private async runPipeline(
     repo: RepoHandle,
     params: Record<string, unknown>,
@@ -4099,12 +4100,16 @@ export class LocalBackend {
       depth: params.blast_depth as number | undefined,
       crossDepth: params.blast_cross_depth as number | undefined,
     };
+    const preview = (params.preview as any) ?? undefined;
+    const prTarget = (params.prTarget as any) ?? undefined;
     return runPipeline(
       {
         spans: spans as any[],
         forensicsLookback: params.forensicsLookback as number | undefined,
         blast,
         testLanguageHint: params.testLanguageHint as string | undefined,
+        preview,
+        prTarget,
       },
       {
         resolveSpan: (span) => this.resolveSpanToHandler(repo, { span }),
@@ -4112,6 +4117,13 @@ export class LocalBackend {
         regressionForensics: (p) =>
           this.regressionForensics(repo, p as Record<string, unknown>),
         genE2ETests: (p) => this.genE2ETests(repo, p as Record<string, unknown>),
+        // S6: 接 validate_in_preview + check_preview_status
+        validateInPreview: (p) =>
+          this.validateInPreview(repo, p as Record<string, unknown>) as Promise<any>,
+        checkPreviewStatus: (p) =>
+          this.checkPreviewStatus(repo, p as Record<string, unknown>) as Promise<any>,
+        // S7: 接 auto_pr
+        autoPR: (p) => this.autoPR(repo, p as Record<string, unknown>) as Promise<any>,
       },
     );
   }

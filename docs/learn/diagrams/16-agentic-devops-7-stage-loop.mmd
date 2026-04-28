@@ -13,7 +13,7 @@ flowchart TB
     S7["📤 7.回写 · Auto-PR/MR Creator<br/>Revert / Patch / Hotfix ✅<br/>(stage-7: dry-run + R-4 双 App + R-12 policy + R-14 patch-LLM 隔离)"]:::existing
     LOOP[/"开发者 review/merge → ship<br/>→ 新一轮 /observe 验证"/]:::external
 
-    ORCH["🎼 Pipeline Orchestrator + Comment Policy<br/>串联 1→7 + 失败回退 + 评论分发 ✅<br/>(B v0.1.0: S2-S5 dry-run，S6/S7 stub)"]:::existing
+    ORCH["🎼 Pipeline Orchestrator + Comment Policy<br/>串联 1→7 + 失败回退 + 评论分发 ✅<br/>(pipeline/v0.2.0 收官: S2-S7 全真跑 + S6 真 K8s + S7 默认 dryRun)"]:::existing
     WIKI["📚 P3 Auto Wiki<br/>(side-effect)"]:::side
     P2["🔗 P2 Multi-hop crossDepth>1<br/>(并行：Stage 3 增强)"]:::parallel
     P6["🐫 P6 OCaml LanguageProvider<br/>(并行：语言扩展)"]:::parallel

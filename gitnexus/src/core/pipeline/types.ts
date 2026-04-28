@@ -1,18 +1,21 @@
-// 横切 · Pipeline Orchestrator types
+// 横切 · Pipeline Orchestrator types (v0.2.0 收官版)
 //
-// 负责把 4 个 MCP 工具串成一条命令：
+// 把 6 个 MCP 工具串成一条命令：
 //   spans
-//     → S2 resolve_span      → handler symbols
-//     → S3 api_blast_radius  → impacted file set
+//     → S2 resolve_span         → handler symbols
+//     → S3 api_blast_radius     → impacted file set
 //     → S4 regression_forensics → suspect commits
-//     → S5 gen_e2e_tests     → test scaffolds
+//     → S5 gen_e2e_tests        → test scaffolds
+//     → S6 validate_in_preview  → preview env + test result（异步轮询）
+//     → S7 auto_pr              → PR/MR 草稿（默认 dryRun）
 //
-// S6 / S7 由 stub 字段占位，等 stage-6/stage-7 落地后切换为真实调用。
+// S6 / S7 现已真接（不再 stub）。caller 缺 serviceImage / prTarget 时该 stage 自动 skip。
 
 import type {
   SpanInput,
   ResolveOutcome,
 } from '../observability/jaeger-span-types.js';
+import type { AutoPRResult, PRCandidate } from '../auto-pr/types.js';
 
 // ─── Stage 单次结果 ───────────────────────────────────────────────────────
 
@@ -29,6 +32,40 @@ export interface StageResult<T> {
   reason?: string;
 }
 
+// ─── S6 输入: 候选 service image + test 命令（caller 提供） ────────────
+
+export interface S6PreviewInput {
+  /** 候选 fix 的服务镜像（已确认可拉的 tag） */
+  serviceImage: string;
+  /** 测试 runner 镜像；省略则与 serviceImage 一致 */
+  testImage?: string;
+  /** 测试启动命令；推荐 sh -c 输出 ===JUNIT-XML=== marker */
+  testCommand: string[];
+  /** preview ns TTL，默认 1800 */
+  ttlSeconds?: number;
+  /** 轮询超时（秒），默认 300 */
+  pollTimeoutSec?: number;
+}
+
+// ─── S7 输入: 目标仓 + PR 模板（caller 提供）─────────────────────────
+
+export interface S7AutoPRInput {
+  owner: string;
+  repo: string;
+  baseBranch: string;
+  /** 默认 'github' */
+  provider?: 'github' | 'gitlab';
+  /** 默认 true — 永远不会真发；caller 通过 GITNEXUS_AUTOPR_LIVE 切换 */
+  dryRun?: boolean;
+  /** PR title / body 模板会自动拼上 S2-S6 摘要 */
+  titlePrefix?: string;
+  bodyHeader?: string;
+  /** 关联 issue 引用（PR body 注一行） */
+  issueRef?: string;
+  /** PR 标签 */
+  labels?: string[];
+}
+
 // ─── Pipeline 输入 ────────────────────────────────────────────────────────
 
 export interface PipelineInput {
@@ -40,14 +77,30 @@ export interface PipelineInput {
   blast?: { depth?: number; crossDepth?: number };
   /** 生成测试时使用的语言提示（兼容 detectLanguage 推断） */
   testLanguageHint?: string;
+  /** 提供 → 跑 S6；省略 → S6 skip 'no serviceImage provided' */
+  preview?: S6PreviewInput;
+  /** 提供 → 跑 S7；省略 → S7 skip 'no PR target provided' */
+  prTarget?: S7AutoPRInput;
 }
 
-// ─── 4 个 stage 的结果别名（unknown 是因为 backend 实现方法签名是 Promise<any>） ──
+// ─── 各 stage 输出别名 ───────────────────────────────────────────────────
 
 export type S2Output = ResolveOutcome;
 export type S3Output = unknown;
 export type S4Output = unknown;
 export type S5Output = unknown;
+
+/** S6 输出：测试结果摘要 + jobId（便于 caller 后续追溯） */
+export interface S6Output {
+  jobId: string;
+  ns: string;
+  finalStatus: 'done' | 'failed';
+  testResult: unknown | null; // EnrichedTestResult，留 unknown 避免循环依赖
+  pass: boolean; // testResult.passed > 0 && failed == 0
+}
+
+/** S7 输出：直接复用 AutoPRResult */
+export type S7Output = AutoPRResult;
 
 // ─── 整条 pipeline 报告 ──────────────────────────────────────────────────
 
@@ -74,9 +127,11 @@ export interface PipelineReport {
   /** S5: 每个 handler 一份 test scaffold */
   s5_testgen: StageResult<S5Output>[];
 
-  /** S6 / S7 占位 — 当前阶段固定 status='skipped'。 */
-  s6_preview: StageResult<never>;
-  s7_autopr: StageResult<never>;
+  /** S6: 整批一份 preview 验证结果（异步轮询完成后落定） */
+  s6_preview: StageResult<S6Output>;
+
+  /** S7: 整批一份 PR 创建报告（默认 dryRun） */
+  s7_autopr: StageResult<S7Output>;
 
   /** 整体执行结论：所有 stage 都 ok 才算 success；只要有一个 error 即 partial。 */
   overall: 'success' | 'partial' | 'no-handler';
@@ -100,4 +155,30 @@ export interface OrchestratorDeps {
     target_uid: string;
     language?: string;
   }) => Promise<S5Output>;
+
+  // ─── S6 接入 (validate_in_preview + check_preview_status) ────────────
+  /** 异步入队，返回 jobId + 初始状态 */
+  validateInPreview: (params: {
+    service_image: string;
+    service_name: string;
+    test_image: string;
+    test_command: string[];
+    ttl_seconds?: number;
+  }) => Promise<{ jobId?: string; status?: string; ns?: string; error?: string }>;
+  /** 查 jobId 状态；orchestrator 会自己轮询直到 terminal */
+  checkPreviewStatus: (params: { job_id: string }) => Promise<{
+    status?: string;
+    ns?: string;
+    testResult?: unknown;
+    error?: string | null;
+  }>;
+
+  // ─── S7 接入 (auto_pr) ────────────────────────────────────────────────
+  /** 调 auto_pr；orchestrator 自己拼 PRCandidate */
+  autoPR: (params: {
+    candidate: PRCandidate;
+    provider?: 'github' | 'gitlab';
+    dryRun?: boolean;
+    stage6Pass?: boolean;
+  }) => Promise<AutoPRResult>;
 }
