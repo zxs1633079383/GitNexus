@@ -65,8 +65,10 @@ export async function runAutoPR(opts: AutoPROpts): Promise<AutoPRResult> {
   }
 
   // ── 2. branch (Fix-11 ts 后缀防冲突) ─────────────────────────────
+  // issueRef 形如 "#2" — 把 # 替换成 'issue-' 让 branch 名可读
+  const refClean = (c.issueRef ?? '').replace(/^#/, 'issue-');
   const desired = sanitizeBranchName(
-    c.issueRef ? `auto-fix/${c.issueRef}` : `auto-fix/${Date.now().toString(36)}`,
+    c.issueRef ? `auto-fix/${refClean}` : `auto-fix/${Date.now().toString(36)}`,
   );
   let finalBranch: string;
   {
