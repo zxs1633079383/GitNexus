@@ -1,4 +1,4 @@
-# GitNexus × Agentic DevOps —— 企业版剩余功能路线图 v2
+# 团队自建版 GitNexus 企业版 —— 7 阶段 Agentic DevOps 闭环路线图 v2
 
 > 作者：GitNexus 核心维护者视角
 > 日期：2026-04-28
@@ -7,123 +7,153 @@
 
 ---
 
-## 0. 全局 Goal —— 这件事到底为什么做
+## 0. 项目目标
 
-### 0.1 一句话目标
+### 0.1 一句话定位
 
-> **把整个研发生命周期，从"人驱动的流程"翻译成"Agent 可执行的协议"。**
+> **把现有零散资产（/observe + Jaeger/Prom + GitNexus OSS + git + K8s + GitHub/GitLab）串成一条从"线上出错"到"自动开 PR 修复"的 7 阶段 Agentic DevOps 闭环 —— 团队自建版的 GitNexus 企业版。**
 
-GitNexus 在这个目标里扮演**确定性知识基础设施**——给 Agent 提供"代码的真相"，是闭环里**唯一不靠 LLM 的层**。上层编排会抖动、观测会缺失、LLM 输出会幻觉，但 GitNexus 给的"X 改动会影响 Y"是**索引时算好的事实**，可以被 Agent 当作硬约束信任。
+更进一层的目标：**把整个研发生命周期，从"人驱动的流程"翻译成"Agent 可执行的协议"。**
 
-### 0.2 运行时闭环 —— /observe 触发的全自动取证管线
+GitNexus 在这个目标里扮演**确定性知识基础设施**——给 Agent 提供"代码的真相"，是闭环里**唯一不靠 LLM 的层**。上层编排会抖动、观测会缺失、LLM 输出会幻觉，但 GitNexus 给的"X 改动会影响 Y"（blast radius）是**索引时算好的事实**，可以被 Agent 当作硬约束信任。
+
+### 0.1.1 vs GitNexus 官方 Enterprise
+
+| 官方 Enterprise | 本路线图（团队自建版）|
+|---|---|
+| PR Review + Auto Wiki + Auto-reindex + Multi-repo + OCaml | OSS + Phase 0 + P5 + P4 + 自家 K8s preview + 自家 Auto-PR + 自家 /observe |
+| 闭环到"PR 评论" | 闭环到 **PR/MR 自动生成 + preview env 验证** |
+| 单产品形态 | **把 OSS 当 SDK**，拼出更贴合团队的研发自动化平台 |
+
+### 0.2 7 阶段 Agentic DevOps 闭环
 
 > 编码侧 coding 闭环（brainstorm / plan / exec / review / ship）由独立编排系统主导，**不在本路线图范围**。
-> **本 v2 路线图聚焦运行时侧全自动管线**：/observe 巡检发现异常 → 自动建 Issue → GitNexus 串联 5 步分析 → 评论可配置（默认 MR）。
+> **本路线图聚焦运行时侧 7 阶段闭环**：从线上出错 → 锚点 → 爆炸 → 溯源 → 生成 → 执行 → 自动开 PR/MR。
 
 ```
 ═══════════════════════════════════════════════════════════════
-START：/observe 巡检触发（外部）
+【1.观测】 /observe (Jaeger + Prom 巡检)               外部已有 ✅
 ═══════════════════════════════════════════════════════════════
-
-   /observe 巡检（定期 cron / 手动触发）
-         │ 监听 Jaeger / Prometheus / 日志
-         ▼
-   ① 发现异常：error trace 或 高响应时间 span
-         │
-         ▼
-   ② 自动建 GitHub/GitLab Issue
-      （body 含 traceId + service + 路径 + 时间窗）
-         │ webhook
-         ▼
-
+   定期 cron / 手动 → 监听 Jaeger trace + Prom 指标
+   发现 error / 高响应时间 / SLO 违约
+   → 自动建 GitHub/GitLab Issue
+     (body 含 traceId + service + 路径 + 时间窗 + 指标 snapshot)
+                                  │ webhook (issue.opened)
+                                  ▼
+   ┌─ precondition · P1 Auto-reindex Webhook ──────────┐
+   │ 校验目标仓 last commit vs 索引快照                 │
+   │ stale → gitnexus analyze（staleness 早退幂等）    │
+   └──────────────────────┬─────────────────────────────┘
+                          ▼ 确保 Stage 3-5 用最新图
 ═══════════════════════════════════════════════════════════════
-GitNexus 自动管线（本路线图核心）—— 5 步串联
+【2.锚点】 Trace2Code Resolver                         Phase 0 新增 🟡
 ═══════════════════════════════════════════════════════════════
-
-   ┌─ Step A · P1 Auto-reindex Webhook ───────────────────────┐
-   │ 收到 issue.opened 事件                                    │
-   │ 校验目标仓 last commit vs 索引快照                        │
-   │ stale → 跑 gitnexus analyze（staleness 早退保证幂等）    │
-   │ fresh → 跳过                                              │
-   └──────────────┬───────────────────────────────────────────┘
-                  ▼ 确保后续步骤的图最新
-   ┌─ Step B · Phase 0  Jaeger Span Normalizer ───────────────┐
-   │ 从 Issue body 取 traceId → 拉 Jaeger /api/traces/<id>   │
-   │ 双格式归一（Jaeger tags[] / OTel attrs{}）              │
-   │ 5 层 HTTP fallback + stacktrace 顶帧反查                 │
-   └──────────────┬───────────────────────────────────────────┘
-                  ▼ handler symbol UID
-   ┌─ Step C · P5 Auto Regression Forensics ──────────────────┐
-   │ impact(handler, upstream/downstream)                      │
-   │ ∩ detect_changes(HEAD~N..HEAD)                           │
-   │ ∩ handler 文件路径过滤（防误报）                          │
-   │ rank by 时间近度 × confidence                            │
-   └──────────────┬───────────────────────────────────────────┘
-                  ▼ 嫌疑提交清单 Top 3（commit + method + 时间）
-   ┌─ Step D · 跨仓影响检查（contract registry）─────────────┐
-   │ handler 是否暴露为 provider contract？                    │
-   │ runGroupImpact（crossDepth=1 默认；P2 后扩到 N）         │
-   └──────────────┬───────────────────────────────────────────┘
-                  ▼ 跨仓波及面 + 风险等级（LOW/MEDIUM/HIGH/CRITICAL）
-   ┌─ Step E · P3 Auto Wiki 刷新（增量）──────────────────────┐
-   │ handler 所在文件 / community 是否已变更？                 │
-   │ 触发增量 wiki 重生成（embedding 哈希复用 + LLM cache）   │
-   └──────────────┬───────────────────────────────────────────┘
-                  ▼ 最新代码 wiki 链接
-
+   trace span → handler symbol UID
+   - Jaeger tags[] ↔ OTel attrs{} 双格式
+   - 5 层 HTTP fallback：http.route → url.path → url.full
+                        → http.url → http.target
+   - stacktrace 顶帧反查（OTel exception event 独有）
+                                  │ symbol UID
+                                  ▼
 ═══════════════════════════════════════════════════════════════
-END：评论输出（per-repo 可配置）
+【3.爆炸】 GitNexus blast radius                       OSS 已有 ✅
+        depth=2, cross_depth=1
 ═══════════════════════════════════════════════════════════════
-
-   .gitnexus/comment-policy.yaml
-   ─────────────────────────────────────────
-   forensics:
-     comment_targets:
-       - mr           # 默认：评论到关联 MR/PR
-     # - issue        # 可选：评论原 Issue
-     # - notify_dev   # 可选：@开发者 / Slack / 邮件
-     # - trace2skill  # 可选：写入故障排查 Skill 训练集
-
-   评论内容：
-   - 🔴 风险等级 + 一句话总结
-   - 嫌疑提交 Top 3（commit + method + 时间）
-   - 跨仓波及（下游服务清单 + 接口）
-   - 相关 wiki 区段链接（最新生成）
-   - Jaeger trace 原始 span 链接（溯源）
+   impact(handler, both, depth=2, crossDepth=1)
+   → 受影响符号集（upstream + downstream）
+   → 跨仓波及面（contract registry）
+   → 四轴风险评级（CRITICAL/HIGH/MEDIUM/LOW）
+                                  │ 受感染范围 = blast radius
+                                  ▼
+═══════════════════════════════════════════════════════════════
+【4.溯源】 Auto Regression Forensics                   P5 新增 🟡
+        git log ∩ blast radius
+═══════════════════════════════════════════════════════════════
+   git log(HEAD~N..HEAD --format='%H %at') 拿近期变更 + 时间戳
+   ∩ blast radius（含 handler 文件路径过滤防误报）
+   rank by 时间近度 × confidence
+                                  │ 嫌疑提交 Top 3
+                                  ▼ (commit + method + 时间)
+═══════════════════════════════════════════════════════════════
+【5.生成】 E2E Test Generator                          P4 升级关键路径 🟡
+        unit + contract + integration
+═══════════════════════════════════════════════════════════════
+   沿 Process / STEP_IN_PROCESS / ENTRY_POINT_OF 走调用链
+   → 生成三层测试：
+     - unit       (handler 单元，孤立函数级)
+     - contract   (跨仓接口契约，provider/consumer 对齐)
+     - integration(端到端调用链，复现 trace 路径)
+   → 输出可执行 test 代码（语言+框架自适应）
+                                  │ test files
+                                  ▼
+═══════════════════════════════════════════════════════════════
+【6.执行】 K8s preview env 跑测试                      部署侧新组件 🟡
+═══════════════════════════════════════════════════════════════
+   spin up preview env（vCluster / Argo CD / 自建 GitOps）
+   - 注入嫌疑提交回滚版本
+   - 跑 Stage 5 生成的 test
+   - 收集结果 → 验证"嫌疑提交是不是真凶"
+                                  │ test result + 验证报告
+                                  ▼
+═══════════════════════════════════════════════════════════════
+【7.回写】 Auto-PR/MR (GitHub/GitLab)                  平台侧新组件 🟡
+═══════════════════════════════════════════════════════════════
+   组装：
+   - fix proposal（基于 Stage 4 嫌疑提交的 revert 或 patch 草稿）
+   - test 文件（Stage 5 生成的三层 test）
+   - forensics 报告（Stage 4 + 6 全留痕）
+   → 调 GitHub/GitLab API 自动开 PR/MR
+   → 关联原 Issue + 按 comment-policy.yaml 路由评论目标
+   → 闭环：开发者 review/merge → ship → 新一轮 /observe 验证
 ```
 
-**GitNexus 在这条管线上的位置**：从 "Issue webhook 抵达"那一刻开始，**Step A-E 全程确定性反查**——
-不调 LLM，不做概率匹配。caller 收到的"嫌疑提交 + 跨仓波及 + wiki 链接"是图谱事实，不是 AI 猜测。
-**只有 Step E 内部的 wiki 文案生成可能用 LLM**（已存在能力，复用 cache）。
+**为什么 Stage 3 是 GitNexus 招牌能力**：blast radius 不调 LLM、不做概率匹配，**完全基于索引时算好的边**。
+其他 6 个 stage 可以用任何工具替换（巡检换 Datadog、preview env 换 spin、PR 换 GitLab），
+但 Stage 3 的"X 改动会影响 Y"必须有一个确定性图谱在背后撑着 —— **这是整套闭环可信任性的 anchor**。
 
-### 0.3 五步管线对应的功能映射
+**precondition（P1 Auto-reindex）的隐藏价值**：保证每次进 Stage 3 时图都是最新的。这是 Stage 3 可信的前提。
 
-| Step | 闭环步骤 | 落地功能 | 当前状态 |
+### 0.3 7 阶段对应的功能映射
+
+| Stage | 名称 | 落地组件 | 状态 |
 |---|---|---|---|
-| START | /observe 巡检发现异常 → 建 Issue | `/observe` skill + Jaeger 监听 | ✅ 已有（外部，业务零侵入） |
-| A | Issue webhook → 自动重织最新图 | **P1 Auto-reindex Webhook** | 🟡 关键路径 |
-| B | Trace span → handler symbol UID | **Phase 0 Jaeger Span Normalizer** | 🟡 本路线图新增 |
-| C | 定位嫌疑提交（commit + method） | **P5 Auto Regression Forensics** | 🟡 本路线图核心 |
-| D | 跨仓波及面（contract registry） | crossDepth=1 已有 → **P2 Multi-hop** 加深度 | 🟡 D 默认能跑，P2 是增强 |
-| E | 相关代码 wiki 增量刷新 | **P3 Auto Wiki 刷新** | 🟡 顺手挂 P1 |
-| END | 评论可配置（默认 MR） | **comment-policy.yaml + Pipeline Orchestrator** | 🟡 本路线图新增（薄编排层）|
-| 异步 | 调用链 → TestCase 生成 | **P4 E2E Test Generation** | 🟡 并行线（不阻塞主管线） |
+| pre | 索引保鲜 | **P1 Auto-reindex Webhook** | 🟡 关键路径 |
+| **1** | **观测** | `/observe` skill + Jaeger + Prom | ✅ 已有（外部，业务零侵入） |
+| **2** | **锚点** | **Phase 0 Trace2Code Resolver**（原名 Jaeger Span Normalizer）| 🟡 本路线图新增 |
+| **3** | **爆炸** | GitNexus `impact()` + contract registry（crossDepth=1）| ✅ OSS 已有，仅参数化包装 |
+| **4** | **溯源** | **P5 Auto Regression Forensics** | 🟡 本路线图核心 |
+| **5** | **生成** | **P4 E2E Test Generator**（升级关键路径，含 unit + contract + integration）| 🟡 本路线图新增 |
+| **6** | **执行** | K8s preview env spinner（vCluster / Argo CD / 自建 GitOps）| 🟡 部署侧新组件 |
+| **7** | **回写** | Auto-PR/MR creator + GitHub/GitLab API + comment-policy.yaml | 🟡 平台侧新组件 |
+
+**并行线（"团队自建版"完整性的一部分，不在 7 阶段主链路）**：
+
+| 功能 | 用途 |
+|---|---|
+| **P2 Multi-hop crossDepth>1** | Stage 3 爆炸增强：跨仓多跳追源头 |
+| **P3 Auto Wiki 刷新** | side-effect：merge 后 wiki 自动重生成（搭 P1 webhook 顺风车）|
+| **P6 OCaml LanguageProvider** | 语言扩展，独立线 |
+| **Pipeline Orchestrator + Comment Policy** | 把 Stage 1→7 串成有错误兜底 / 超时 / 并发 / 评论分发的薄编排层 |
 
 ---
 
 ## 1. 现状（2026-04-28）
 
-| 功能 | Pri | 状态 | 备注 |
-|---|---|---|---|
-| **PR Review Bot** | P0 | ✅ 已上线 | 含 `crossDepth=1` 跨仓影响分析；GitHub App `gitnexus-pr-reviewer-zxs` 已发布 |
-| Auto-reindex Webhook | P1 | 🟡 未做 | 关键路径（Step A）|
-| Phase 0 Jaeger Span Normalizer | — | 🟡 未做 | 关键路径（Step B），P5 前置 enabler |
-| Auto Regression Forensics | P5 | 🟡 未做 | 关键路径核心（Step C）|
-| Multi-hop crossDepth>1 | P2 | 🟡 未做 | 并行线（Step D 增强，不阻塞主管线） |
-| Auto Wiki 刷新 | P3 | 🟡 未做 | 关键路径（Step E），顺手挂 P1 |
-| **Pipeline Orchestrator + Comment Policy** | — | 🟡 未做 | 关键路径（END），薄编排层把 A-E 串联 + 评论目标可配置 |
-| E2E Test Generation | P4 | 🟡 未做 | 并行线（异步，不阻塞主管线）|
-| OCaml LanguageProvider | P6 | 🟡 未做 | 并行线 |
+| 功能 | Pri | 状态 | 7 阶段对应 | 备注 |
+|---|---|---|---|---|
+| **PR Review Bot** | P0 | ✅ 已上线 | — | 含 `crossDepth=1` 跨仓影响分析；GitHub App `gitnexus-pr-reviewer-zxs` 已发布；不在 7 阶段闭环里 |
+| `/observe` skill + Jaeger + Prom | — | ✅ 已有 | **Stage 1** | 外部，业务零侵入 |
+| GitNexus `impact()` blast radius | — | ✅ OSS 已有 | **Stage 3** | 仅需参数化包装（depth=2, crossDepth=1）|
+| Auto-reindex Webhook | P1 | 🟡 未做 | **pre** | 索引保鲜，确保 Stage 3-5 用最新图 |
+| Phase 0 Trace2Code Resolver | — | 🟡 未做 | **Stage 2** | 原 Jaeger Span Normalizer 改名 |
+| Auto Regression Forensics | P5 | 🟡 未做 | **Stage 4** | git log ∩ blast radius |
+| E2E Test Generator | P4 | 🟡 未做 | **Stage 5** | **升级到关键路径**（unit + contract + integration） |
+| K8s preview env spinner | — | 🟡 未做 | **Stage 6** | 部署侧新组件（vCluster / Argo CD / 自建）|
+| Auto-PR/MR creator | — | 🟡 未做 | **Stage 7** | 平台侧新组件（GitHub/GitLab API）|
+| Multi-hop crossDepth>1 | P2 | 🟡 未做 | Stage 3 增强 | 并行线 |
+| Auto Wiki 刷新 | P3 | 🟡 未做 | side-effect | 搭 P1 webhook 顺风车 |
+| **Pipeline Orchestrator + Comment Policy** | — | 🟡 未做 | 横切 | 把 Stage 1→7 串成有错误兜底 / 超时 / 并发 / 评论分发的薄编排层 |
+| OCaml LanguageProvider | P6 | 🟡 未做 | — | 并行线 |
 
 ---
 
@@ -133,38 +163,54 @@ END：评论输出（per-repo 可配置）
 
 ```
 ═══════════════════════════════════════════════════════════════
-关键路径（串行，4 周端到端跑通 START → END）：
+7 阶段闭环关键路径（串行，6.5 周端到端跑通 Stage 1 → 7）：
 ═══════════════════════════════════════════════════════════════
 
-P1  Auto-reindex Webhook（1 周）              ← Step A
-   │   webhook server + job-queue（含同 repo 去重）
+P1  Auto-reindex Webhook（1 周）                  ← pre
+   │   webhook server + job-queue（同 repo 去重）
    │
    ▼
-Phase 0  Jaeger Span Normalizer（1 周）       ← Step B
+Phase 0  Trace2Code Resolver（1 周）              ← Stage 2
    │   双格式归一 + 5 层 fallback + stacktrace 兜底
    │
    ▼
-P5  Auto Regression Forensics（1 周）          ← Step C
-   │   impact ∩ detect_changes ∩ 文件路径过滤
-   │
-   ├─► Step D 跨仓波及（crossDepth=1 已有，复用 contract registry，~0 周）
-   │
-   ├─► P3 Auto Wiki 刷新（半周）               ← Step E
+Blast Radius 参数化包装（0.5 周）                 ← Stage 3
+   │   impact(depth=2, crossDepth=1) MCP 工具增强
    │
    ▼
-Pipeline Orchestrator + Comment Policy（半周） ← END
-       串联 A-E + comment-policy.yaml + 评论渲染器
+P5  Auto Regression Forensics（1 周）             ← Stage 4
+   │   git log ∩ blast radius + 文件路径过滤
+   │
+   ▼
+P4  E2E Test Generator（2 周）                    ← Stage 5
+   │   unit + contract + integration 三层
+   │
+   ▼
+K8s Preview Env Spinner（1.5 周）                 ← Stage 6
+   │   vCluster/Argo CD 接入 + 注入回滚版 + 跑 test
+   │
+   ▼
+Auto-PR/MR Creator（1 周）                        ← Stage 7
+   │   GitHub/GitLab API + fix proposal 模板
+   │
+   ▼
+Pipeline Orchestrator + Comment Policy（0.5 周）  ← 横切
+       串联 1→7 + comment-policy.yaml + 评论分发
+
+P3 Auto Wiki 刷新（0.5 周）—— 顺手挂 P1 webhook，不阻塞主链路
 
 ═══════════════════════════════════════════════════════════════
 并行线（互不阻塞主管线）：
 ═══════════════════════════════════════════════════════════════
 
-P2  Multi-hop crossDepth>1（1.5 周）           ← Step D 增强
-P4  E2E Test Gen 选 B 外挂（1.5 周）          ← 异步分支
-P6  OCaml LanguageProvider（2 周）
+P2  Multi-hop crossDepth>1（1.5 周）              ← Stage 3 增强
+P6  OCaml LanguageProvider（2 周）                ← 语言扩展
 
 ═══════════════════════════════════════════════════════════════
-总工期：单人 4-6 周 / 双人 3-4 周
+总工期：
+- 单人串行：8-9 周（含 P3）
+- 双人并行：5-6 周（线 A 主链 / 线 B 并行 P2+P6+K8s）
+- 三人并行：4-5 周（额外一人专攻 K8s preview env + Auto-PR）
 ═══════════════════════════════════════════════════════════════
 ```
 
@@ -190,7 +236,10 @@ review 抓出 **2 处硬 bug + 4 处细节**，已经全部合入：
 
 ## 3. 各功能详细实现方案
 
-### 3.1 Phase 0 · Jaeger Span Normalizer
+> 本节按 P-item / 组件分组（编号沿用 v1）。**与 7 阶段闭环的对应关系**见 §0.3。
+> Stage 3 GitNexus blast radius **完全复用 OSS 已有 `impact()`**，仅需增加一个参数化的 MCP 工具包装（**0.5 周**），无独立子节——见 §3.10 Pipeline Orchestrator 调用链。
+
+### 3.1 Stage 2 · Phase 0 Trace2Code Resolver（Jaeger Span Normalizer）
 
 **目标**：业务零侵入。Jaeger / OTel span JSON → handler symbol UID（GitNexus 内部反查 Route 节点 + stacktrace 兜底）。
 
@@ -235,7 +284,7 @@ const contractId = `http::${method}::${normalizeConsumerPath(path)}`;
 | 5 | Stacktrace 顶帧反查（独有） | `exception.stacktrace` log event |
 | — | 都未命中 | `kind: 'unknown'` |
 
-### 3.2 P1 · Auto-reindex Webhook
+### 3.2 pre · P1 Auto-reindex Webhook
 
 **目标**：push / PR sync / merge → 自动重织受影响仓的图，给 P5 / Wiki / impact 查询提供 fresh data。
 
@@ -250,7 +299,7 @@ const contractId = `http::${method}::${normalizeConsumerPath(path)}`;
 
 **并发安全性**：`lbug.lock` 单写者锁本来就保证多 push 串行；staleness 早退保证 no-op 安全。**真正风险是 force-push 风暴**——靠 job-queue 同 repo 去重防御。
 
-### 3.3 P5 · Auto Regression Forensics
+### 3.3 Stage 4 · P5 Auto Regression Forensics
 
 **目标**：caller 喂一条 / 一组失败 trace span，输出嫌疑提交清单（带 commit hash + 改了哪个 method + 距 trace 时间多久）。
 
@@ -304,7 +353,7 @@ async function regressionForensics(spans: NormalizedSpan[], opts) {
 }
 ```
 
-### 3.4 P2 · Multi-hop crossDepth>1
+### 3.4 Stage 3 增强 · P2 Multi-hop crossDepth>1（并行线）
 
 **目标**：A→B→C 多跳跨仓影响分析（超过当前 `MAX_SUPPORTED_CROSS_DEPTH=1` 硬上限）。
 
@@ -318,7 +367,7 @@ async function regressionForensics(spans: NormalizedSpan[], opts) {
 | Deadline / fan-out 限制 | `runGroupImpact` | 每跳 timeoutMs，每层节点上限 | 🔧 加 |
 | **句柄泄漏修复** | `gitnexus/src/core/group/cross-impact.ts:519` | 每个 bridge handle 进 finally | 🔧 改 |
 
-### 3.5 P3 · Auto Wiki 刷新
+### 3.5 side-effect · P3 Auto Wiki 刷新
 
 **目标**：搭 P1 webhook 顺风车，push 事件触发 wiki 重生成。
 
@@ -328,18 +377,87 @@ async function regressionForensics(spans: NormalizedSpan[], opts) {
 | Wiki 生成器 | `gitnexus/src/cli/wiki.ts` + `core/wiki/generator.ts` | 跑全套 wiki 流程 | ♻️ 已有 |
 | 增量缓存 | `gitnexus/src/core/wiki/{vector-cache, llm-cache}.ts` | embedding 哈希复用 + LLM 调用缓存 | 🆕 加 |
 
-### 3.6 P4 · E2E Test Generation（选 B：外挂模式）
+### 3.6 Stage 5 · P4 E2E Test Generator（升级关键路径，三层测试）
 
-**为什么选 B**：保 GitNexus "no LLM at index time" 的卖点。GitNexus 只输出**调用链 JSON**，caller（Claude / Cursor / 自家 LLM）自带 LLM 生 fixture 代码。
+**目标**：从 Stage 4 嫌疑提交 + Stage 3 blast radius 出发，生成 **unit + contract + integration** 三层可执行测试，给 Stage 6 K8s preview env 跑。
+
+**为什么从"并行 / 选 B 外挂"升级到关键路径**：原方案只输出调用链 JSON 让 caller 自带 LLM 生 fixture——但 7 阶段闭环要求 **GitNexus 自己产出可执行 test 文件**，给 Stage 6 直接消费。所以必须内置 LLM 调用层（**仅在 query 时，不在 index 时——保住"no LLM at index time"卖点**）。
 
 | 角色 | 文件 | 职责 | 状态 |
 |---|---|---|---|
-| Process 遍历 | `gitnexus/src/core/test-gen/process-traversal.ts` | 沿 STEP_IN_PROCESS 走调用链 → JSON，**BFS 加 visited set 防递归** | 🆕 (~120) |
-| 入口节点查询 | LadybugDB | Process / Route / Tool 节点已索引 | ♻️ 已有 |
-| Fixture 模板 | `gitnexus/src/core/test-gen/fixture-templates.ts` | 输出语言无关 JSON schema | 🆕 (~80) |
-| MCP 工具 | `gitnexus/src/mcp/tools.ts` | `gen_test_chain({process_uid})` | 🔧 加工具 |
+| Process 遍历 | `gitnexus/src/core/test-gen/process-traversal.ts` | 沿 STEP_IN_PROCESS 走调用链，**BFS 加 visited set 防递归** | 🆕 (~120) |
+| 三层测试规划器 | `gitnexus/src/core/test-gen/test-planner.ts` | 决定 unit / contract / integration 各覆盖哪些节点 | 🆕 (~150) |
+| Unit 生成器 | `gitnexus/src/core/test-gen/generators/unit-gen.ts` | handler 单元测试，mock 外部依赖 | 🆕 (~100) |
+| Contract 生成器 | `gitnexus/src/core/test-gen/generators/contract-gen.ts` | provider/consumer 双侧 contract 测试（复用 contract registry）| 🆕 (~120) |
+| Integration 生成器 | `gitnexus/src/core/test-gen/generators/integration-gen.ts` | 复现 trace 路径的端到端测试 | 🆕 (~150) |
+| 语言+框架适配 | `gitnexus/src/core/test-gen/adapters/{java-junit, ts-jest, go-test, ...}.ts` | 不同栈输出对应代码 | 🆕 每语言 ~80 |
+| LLM client | `gitnexus/src/core/test-gen/llm-client.ts` | 复用现有 `core/wiki/llm-client.ts` 模式 | ♻️ 复用 + 适配 |
+| MCP 工具 | `gitnexus/src/mcp/tools.ts` | `gen_e2e_tests({trace_id, suspect_commit, layers: [unit, contract, integration]})` | 🔧 加工具 |
 
-### 3.7 P6 · OCaml LanguageProvider
+**关键设计**：调用链 JSON（原 B 方案产物）作为**中间表示**，三个生成器都以它为输入——保持架构清晰，未来想换 LLM 提供商或外挂只换 generator 那一层。
+
+### 3.7 Stage 6 · K8s Preview Env Spinner（部署侧新组件）
+
+**目标**：拉起 preview env，注入 Stage 4 嫌疑提交的回滚版本，跑 Stage 5 生成的 test，验证 hypothesis。
+
+**实现路径选择**：
+
+| 选项 | 优点 | 缺点 |
+|---|---|---|
+| **A. vCluster** | 轻量、共享物理 K8s、几秒拉起 | 隔离性弱、共享 control plane 风险 |
+| **B. Argo CD ApplicationSet** | GitOps 原生、声明式、审计强 | 拉起慢（分钟级）、配置繁 |
+| **C. 自建 GitOps（基于 Helm + namespace 隔离）** | 完全自主可控 | 维护成本最高 |
+
+**推荐 A → B 渐进**：先用 vCluster 跑通 MVP，规模扩大后转 Argo CD。
+
+| 角色 | 文件 | 职责 | 状态 |
+|---|---|---|---|
+| Preview env spinner | `gitnexus/src/server/preview-env/spinner.ts` | 抽象接口（vCluster / Argo CD 实现可换） | 🆕 (~100) |
+| vCluster 适配器 | `gitnexus/src/server/preview-env/adapters/vcluster.ts` | 拉起 vCluster + 等就绪 + 销毁 | 🆕 (~150) |
+| 镜像注入器 | `gitnexus/src/server/preview-env/image-injector.ts` | 把 Stage 4 嫌疑提交回滚版镜像注入 deployment | 🆕 (~80) |
+| Test runner | `gitnexus/src/server/preview-env/test-runner.ts` | 把 Stage 5 test 文件 mount 进环境 + 执行 + 收结果 | 🆕 (~120) |
+| 结果收集器 | `gitnexus/src/server/preview-env/result-collector.ts` | 拉 test 输出 + 日志 + screenshot（如有 UI） | 🆕 (~100) |
+| 环境清理 | spinner 内部 | TTL 到期或验证完成后销毁 namespace | 🆕 |
+| MCP 工具 | `gitnexus/src/mcp/tools.ts` | `validate_in_preview({suspect_commit, tests})` | 🔧 加工具 |
+
+**前置条件（你的团队已有/缺）**：
+- ✅/🟡 K8s 集群（生产或专用 preview cluster）
+- ✅/🟡 镜像构建管线（CI 产 commit → image）
+- 🟡 vCluster 或 Argo CD 接入凭证（kubeconfig + RBAC）
+- 🟡 dev/preview namespace 命名规范 + TTL 清理 cron
+
+> 这一步最多依赖你团队的 K8s 现状。**如果团队无 K8s，Stage 6 可降级为"本地 docker-compose 跑测试"，闭环仍然成立**。
+
+### 3.8 Stage 7 · Auto-PR/MR Creator（平台侧新组件）
+
+**目标**：把 Stage 4-6 的产出（嫌疑提交 + test 文件 + 验证结果）打包成一个 PR/MR，自动开到代码仓。
+
+| 角色 | 文件 | 职责 | 状态 |
+|---|---|---|---|
+| PR/MR 抽象 | `gitnexus/src/server/auto-pr/provider.ts` | GitHub / GitLab 接口抽象 | 🆕 (~80) |
+| GitHub 实现 | `gitnexus/src/server/auto-pr/providers/github.ts` | 复用 P0 PR Bot 的 GitHub App + 加 `contents:write` 权限 | 🆕 (~120) |
+| GitLab 实现 | `gitnexus/src/server/auto-pr/providers/gitlab.ts` | GitLab API token + project access | 🆕 (~120) |
+| Fix proposal 模板 | `gitnexus/src/server/auto-pr/proposals/{revert, patch, hotfix}.ts` | 三种修复提案模板：纯 revert / 局部 patch / hotfix 占位 | 🆕 每种 ~80 |
+| 分支管理 | `gitnexus/src/server/auto-pr/branch-manager.ts` | 创建 `forensics/issue-<n>` 分支 + 提交 test + commit fix proposal | 🆕 (~100) |
+| PR body 渲染器 | `gitnexus/src/server/auto-pr/pr-renderer.ts` | 拼 markdown：blast radius + suspects + test result + Jaeger 链接 | 🆕 (~120) |
+| Issue 关联 | provider 内 | PR description 加 `Closes #<issue>` 自动关联 | 🆕 |
+| MCP 工具 | `gitnexus/src/mcp/tools.ts` | `auto_open_pr({fix_proposal, tests, validation_report})` | 🔧 加工具 |
+
+**修复提案的三种模式**：
+
+| 模式 | 适用 | 自动化程度 |
+|---|---|---|
+| **Revert** | Stage 6 验证通过（回滚版 test 全过 → 真凶确认） | 全自动开 PR，标 `auto-fix:revert` |
+| **Patch** | 嫌疑提交不能完全 revert（中间有依赖提交），LLM 生成局部 patch | 半自动，标 `auto-fix:patch:needs-review` |
+| **Hotfix 占位** | 验证不通过 / 涉及业务逻辑 / 高风险 | 仅开 issue + test，不提交 fix；标 `auto-fix:investigate` |
+
+**安全栅栏**（必加）：
+- 默认开 PR 是 **draft**，不直接 ready-for-review
+- 加 label `auto-generated`，开发者可一键过滤
+- per-repo `.gitnexus/auto-pr-policy.yaml` 控制：哪些路径允许自动开 PR、哪些必须人工
+- merge 必须经过 P0 PR Review Bot + 真人 review，**不允许 auto-merge**
+
+### 3.9 P6 · OCaml LanguageProvider（并行线）
 
 **走旧 DAG 路**——不进 `MIGRATED_LANGUAGES`，等 tree-sitter-ocaml grammar 对 functor / 一等模块支持成熟再迁 RFC #909 新路。
 
@@ -352,15 +470,15 @@ async function regressionForensics(spans: NormalizedSpan[], opts) {
 | Provider 注册 | `gitnexus/src/core/ingestion/languages/index.ts` | `satisfies` 编译期校验 | 🔧 +1 |
 | 不进 RFC #909 | `gitnexus/src/scope-resolution/registry-primary-flag.ts:67` | `MIGRATED_LANGUAGES` 不动 | ♻️ 不动 |
 
-### 3.8 Pipeline Orchestrator + Comment Policy（END 节点）
+### 3.10 Pipeline Orchestrator + Comment Policy（横切层）
 
-**目标**：薄编排层把 Step A-E 串联，结果按 per-repo `comment-policy.yaml` 路由到 MR / Issue / 通知 / Trace2Skill。
+**目标**：薄编排层把 **Stage 1 → 7** 串联，结果按 per-repo `comment-policy.yaml` 路由到 MR / Issue / 通知 / Trace2Skill。
 
-**为什么独立**：A-E 每个都是单一职责的 primitive，**编排逻辑**（顺序、错误兜底、超时、并发、评论目标选择）是横切关注点，剥出来便于单测 + 不同触发源（Issue webhook / 手动 CLI / 定时巡检）共用。
+**为什么独立**：每个 Stage 都是单一职责的 primitive，**编排逻辑**（顺序、错误兜底、超时、并发、评论目标选择、Stage 6 失败时的回退策略）是横切关注点，剥出来便于单测 + 不同触发源（Issue webhook / 手动 CLI / 定时巡检）共用。
 
 | 角色 | 文件 | 职责 | 状态 |
 |---|---|---|---|
-| 主编排器 | `gitnexus/src/server/pipeline/forensics-orchestrator.ts` | A-E 串联 + 每步超时 + 整体 deadline + 并发限制 | 🆕 (~180) |
+| 主编排器 | `gitnexus/src/server/pipeline/forensics-orchestrator.ts` | Stage 1→7 串联 + 每 Stage 超时 + 整体 deadline + 并发限制 + 失败回退 | 🆕 (~250) |
 | Issue webhook handler | `gitnexus/src/server/webhook-handlers/issue-handler.ts` | 接 issue.opened → 解析 traceId → 触发主编排器 | 🆕 (~100) |
 | Trace 拉取器 | `gitnexus/src/core/observability/jaeger-client.ts` | 主动拉 `/api/traces/<id>`（caller 没推 span 时）| 🆕 (~80) |
 | 评论策略加载器 | `gitnexus/src/server/pipeline/comment-policy.ts` | 读 `.gitnexus/comment-policy.yaml`，per-repo 缓存 | 🆕 (~60) |
@@ -403,16 +521,19 @@ forensics:
 
 | 阶段 | 周数 | 备注 |
 |---|---|---|
-| P1 Auto-reindex Webhook（Step A） | 1 周 | webhook server + job-queue（同 repo 去重） |
-| Phase 0 Jaeger Span Normalizer（Step B） | 1 周 | 含 stacktrace 解析器 + 双归一函数 |
-| P5 Auto Regression Forensics（Step C） | 1 周 | 不依赖 P2，crossDepth=1 已够用 |
-| P3 Auto Wiki 刷新（Step E） | 半周 | 顺手挂 P1 webhook |
-| Pipeline Orchestrator + Comment Policy（END） | 半周 | 串联 A-E + comment-policy.yaml + 评论分发 |
-| **关键路径小计** | **4 周** | START → END 端到端跑通 |
-| P2 Multi-hop crossDepth>1 | 1.5 周 | 并行（Step D 增强） |
-| P4 E2E Test Gen 选 B | 1.5 周 | 并行（异步分支） |
-| P6 OCaml LanguageProvider | 2 周 | 并行 |
-| **总工期** | **4 - 6 周** | 单人 / 双人节奏 |
+| P1 Auto-reindex Webhook（pre） | 1 周 | webhook server + job-queue（同 repo 去重） |
+| Phase 0 Trace2Code Resolver（Stage 2） | 1 周 | 含 stacktrace 解析器 + 双归一函数 |
+| Blast Radius 参数化包装（Stage 3） | 0.5 周 | impact(depth=2, crossDepth=1) 包装为新 MCP 工具 |
+| P5 Auto Regression Forensics（Stage 4） | 1 周 | git log ∩ blast radius + 文件路径过滤 |
+| P4 E2E Test Generator（Stage 5）| **2 周** | unit + contract + integration 三层（**升级关键路径**） |
+| K8s Preview Env Spinner（Stage 6） | 1.5 周 | vCluster 接入 + 注入回滚版 + 跑 test |
+| Auto-PR/MR Creator（Stage 7） | 1 周 | GitHub/GitLab API + fix proposal 模板 |
+| Pipeline Orchestrator + Comment Policy（横切） | 0.5 周 | 串联 1→7 + 失败回退 + 评论分发 |
+| P3 Auto Wiki 刷新（side-effect） | 0.5 周 | 顺手挂 P1 webhook |
+| **关键路径小计** | **9 周（单人串行）** | Stage 1 → 7 端到端跑通 |
+| P2 Multi-hop crossDepth>1 | 1.5 周 | 并行（Stage 3 增强） |
+| P6 OCaml LanguageProvider | 2 周 | 并行（语言扩展） |
+| **总工期** | **5-9 周** | 三人并行 5 周 / 双人 6-7 周 / 单人 9 周 |
 
 ---
 
