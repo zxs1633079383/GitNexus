@@ -1384,6 +1384,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // L (Loop 闭环): 同时注入 issueTrigger，issues.opened 时自动跑 7 阶段 pipeline
   mountWebhookRoutes(app, {
     githubSecret: process.env.GITNEXUS_WEBHOOK_SECRET,
+    giteeSecret: process.env.GITNEXUS_GITEE_SECRET,
     trigger: async (event) => {
       const job = jobManager.createJob({ repoUrl: event.cloneUrl });
       if (job.status !== 'queued') {
@@ -1654,6 +1655,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       if (process.env.GITNEXUS_WEBHOOK_SECRET) {
         console.log(
           `  webhook  POST http://${displayHost}:${port}/webhook/github (HMAC sha256)`,
+        );
+      }
+      if (process.env.GITNEXUS_GITEE_SECRET) {
+        console.log(
+          `  webhook  POST http://${displayHost}:${port}/webhook/gitee (X-Gitee-Token plain)`,
         );
       }
       resolve();
