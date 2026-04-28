@@ -789,6 +789,25 @@ GitNexus emits scaffolds Stage 6 K8s preview env can mount + run.`,
     },
   },
   {
+    name: 'auto_pr',
+    description:
+      'Stage 7 (R-4 双 App): 把候选 fix 走 policy 校验 → branch (Fix-11 ts 后缀) → put-files → 创建 PR/MR。默认 dryRun=true 不真发；GITNEXUS_AUTOPR_LIVE=1 + GITNEXUS_AUTOPR_TOKEN 配对启用 live。policy 默认 block .github/workflows/** + .env + .pem + .key (R-12)。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        candidate: {
+          type: 'object',
+          description: 'PRCandidate { owner, repo, baseBranch, title, bodyMarkdown, files[], labels?, draft?, suspectCommit?, issueRef? }',
+        },
+        provider: { type: 'string', enum: ['github', 'gitlab'], description: '默认 github' },
+        dryRun: { type: 'boolean', description: '默认 true，不真发；live 模式需 GITNEXUS_AUTOPR_LIVE=1' },
+        stage6Pass: { type: 'boolean', description: 'Stage 6 是否拿到绿勾（policy.require_stage6_pass 闸）' },
+        policy: { type: 'object', description: 'AutoPRPolicy partial — 与 default 合并' },
+      },
+      required: ['candidate'],
+    },
+  },
+  {
     name: 'run_pipeline',
     description:
       'Agentic DevOps 横切：把 spans 一次喂入 4 阶段（resolve_span → api_blast_radius → regression_forensics → gen_e2e_tests），返回逐 stage 结果 + 总耗时；S6/S7 现阶段 stub。',

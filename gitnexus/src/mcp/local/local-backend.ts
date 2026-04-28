@@ -740,6 +740,8 @@ export class LocalBackend {
         return this.validateInPreview(repo, params as Record<string, unknown>);
       case 'check_preview_status':
         return this.checkPreviewStatus(repo, params as Record<string, unknown>);
+      case 'auto_pr':
+        return this.autoPR(repo, params as Record<string, unknown>);
       default:
         throw new Error(`Unknown tool: ${method}`);
     }
@@ -4035,6 +4037,51 @@ export class LocalBackend {
     const { checkPreviewStatus } = await import('../../core/preview/mcp-handlers.js');
     const mgr = await this.getPreviewJobManager();
     return checkPreviewStatus(mgr, params);
+  }
+
+  // S7 · auto_pr — 真发或 dry-run。R-4: token 走 GITNEXUS_AUTOPR_TOKEN
+  // (App-2 拆分后只授 contents:write 的 token，绝不带 workflows:write)。
+  // 默认 dryRun=true；GITNEXUS_AUTOPR_LIVE=1 + token 在场才真发。
+  private async autoPR(_repo: RepoHandle, params: Record<string, unknown>): Promise<unknown> {
+    const { runAutoPR, makeDryRunProvider } = await import('../../core/auto-pr/auto-pr.js');
+    const { GitHubPRProvider } = await import('../../core/auto-pr/providers/github.js');
+    const { GitLabPRProvider } = await import('../../core/auto-pr/providers/gitlab.js');
+
+    const candidate = params.candidate as any;
+    if (!candidate || typeof candidate !== 'object') {
+      return { error: 'candidate (PRCandidate) is required' };
+    }
+    if (!candidate.owner || !candidate.repo || !candidate.baseBranch || !candidate.title) {
+      return { error: 'candidate.owner/repo/baseBranch/title are required' };
+    }
+    const stage6Pass = !!params.stage6Pass;
+    const liveEnv = process.env.GITNEXUS_AUTOPR_LIVE === '1';
+    const dryRun = params.dryRun === false ? !liveEnv : true;
+
+    const providerKind = (params.provider as string | undefined) ?? 'github';
+    const token = process.env.GITNEXUS_AUTOPR_TOKEN ?? '';
+
+    let provider;
+    if (dryRun) {
+      // dry-run 不需要 token；用 stub provider 避免 throw
+      provider = makeDryRunProvider(providerKind as 'github' | 'gitlab');
+    } else if (providerKind === 'github') {
+      if (!token) return { error: 'GITNEXUS_AUTOPR_TOKEN env required for live mode' };
+      provider = new GitHubPRProvider({ token });
+    } else if (providerKind === 'gitlab') {
+      if (!token) return { error: 'GITNEXUS_AUTOPR_TOKEN env required for live mode' };
+      provider = new GitLabPRProvider({ token });
+    } else {
+      return { error: `unsupported provider "${providerKind}"` };
+    }
+
+    return runAutoPR({
+      candidate,
+      provider,
+      policy: params.policy as any,
+      dryRun,
+      stage6Pass,
+    });
   }
 
   // 横切 · run_pipeline — 串 S2 → S3 → S4 → S5 一条 dry-run。

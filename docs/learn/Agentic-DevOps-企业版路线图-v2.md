@@ -42,7 +42,7 @@ flowchart TB
     S4["🔬 4.溯源 · P5 Auto Regression Forensics<br/>git log ∩ blast radius ✅"]:::existing
     S5["🧪 5.生成 · P4 E2E Test Generator<br/>unit + contract + integration ✅<br/>(R-1: scaffold + TODO 占位)"]:::existing
     S6["🚀 6.执行 · K8s Preview Env Spinner<br/>注入候选 + 跑 test ✅<br/>(stage-6: PreviewJobManager + ns 前缀守门 + R-3 异步)"]:::existing
-    S7["📤 7.回写 · Auto-PR/MR Creator<br/>Revert / Patch / Hotfix 占位"]:::new
+    S7["📤 7.回写 · Auto-PR/MR Creator<br/>Revert / Patch / Hotfix ✅<br/>(stage-7: dry-run + R-4 双 App + R-12 policy + R-14 patch-LLM 隔离)"]:::existing
     LOOP[/"开发者 review/merge → ship<br/>→ 新一轮 /observe 验证"/]:::external
 
     ORCH["🎼 Pipeline Orchestrator + Comment Policy<br/>串联 1→7 + 失败回退 + 评论分发 ✅<br/>(B v0.1.0: S2-S5 dry-run，S6/S7 stub)"]:::existing
