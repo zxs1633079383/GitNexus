@@ -1396,15 +1396,23 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       const { handleIssueOpened } = await import('../core/observability/issue-handler.js');
       const { GitHubPRProvider } = await import('../core/auto-pr/providers/github.js');
       const { GitLabPRProvider } = await import('../core/auto-pr/providers/gitlab.js');
+      const { GiteePRProvider } = await import('../core/auto-pr/providers/gitee.js');
       const token = process.env.GITNEXUS_AUTOPR_TOKEN ?? '';
-      // provider kind 推断：默认 github；GITNEXUS_PROVIDER=gitlab 切 GitLab
+      // provider kind 推断：默认 github；GITNEXUS_PROVIDER=gitee/gitlab 切对应 provider
       const providerKind = process.env.GITNEXUS_PROVIDER ?? 'github';
-      const provider =
-        providerKind === 'gitlab' && token
-          ? new GitLabPRProvider({ token })
-          : token
-          ? new GitHubPRProvider({ token })
-          : null;
+      let provider: import('../core/auto-pr/types.js').PRProvider | null = null;
+      if (token) {
+        if (providerKind === 'gitee') {
+          provider = new GiteePRProvider({
+            token,
+            apiBase: process.env.GITEE_API_BASE,
+          });
+        } else if (providerKind === 'gitlab') {
+          provider = new GitLabPRProvider({ token });
+        } else {
+          provider = new GitHubPRProvider({ token });
+        }
+      }
 
       const r = await handleIssueOpened(
         {

@@ -4,7 +4,8 @@
 > 日期：2026-04-28
 > 状态：**🎯 真闭环完成**（10 个 tag：phase-0 / stage-1/3/4/5/6/7 / pipeline v0.1/v0.2/v0.3）
 > 自动闭环触发链路: /observe 建 issue → webhook issues.opened → 自动跑 7 阶段 → 回贴评论 + dryRun PR/MR
-> 剩余 backlog：① 用户提供 token 翻 live 真发 PR  ② Gitee provider（30 分钟工作量）③ P2/P3/P6 / R-2 (并行线，闭环不依赖)
+> 平台支持: GitHub PR ✅ + GitLab MR ✅ + Gitee PR ✅（含内网企业版 GITEE_API_BASE 配置）
+> 剩余 backlog：① 用户提供 token 翻 live 真发 PR  ② P2/P3/P6 / R-2 (并行线，闭环不依赖)
 > 上一版：`docs/learn/PR-Review-Bot-方案.md`（2026-04-26，P0 PR Review Bot 已上线）
 
 ---
@@ -37,14 +38,14 @@ GitNexus 在这个目标里扮演**确定性知识基础设施**——给 Agent 
 ```mermaid
 flowchart TB
     OBS["🔍 1.观测<br/>/observe + Jaeger + Prom"]:::existing
-    ISSUE[/"📋 GitHub/GitLab Issue<br/>traceId + service + 路径"/]:::external
+    ISSUE[/"📋 GitHub/GitLab/Gitee Issue<br/>traceId + service + 路径"/]:::external
     PRE["⚙️ pre · P1 Auto-reindex Webhook<br/>校验 last commit vs 索引快照 ✅<br/>(stage-1: HMAC + dedup 复用)"]:::existing
     S2["🎯 2.锚点 · Phase 0 Trace2Code Resolver<br/>Jaeger/OTel 双格式 + 5 层 fallback + stacktrace ✅"]:::existing
     S3["💥 3.爆炸 · GitNexus blast radius<br/>api_blast_radius depth=2 crossDepth=1 ✅"]:::existing
     S4["🔬 4.溯源 · P5 Auto Regression Forensics<br/>git log ∩ blast radius ✅"]:::existing
     S5["🧪 5.生成 · P4 E2E Test Generator<br/>unit + contract + integration ✅<br/>(R-1: scaffold + TODO 占位)"]:::existing
     S6["🚀 6.执行 · K8s Preview Env Spinner<br/>注入候选 + 跑 test ✅<br/>(stage-6: PreviewJobManager + ns 前缀守门 + R-3 异步)"]:::existing
-    S7["📤 7.回写 · Auto-PR/MR Creator<br/>Revert / Patch / Hotfix ✅<br/>(stage-7: dry-run + R-4 双 App + R-12 policy + R-14 patch-LLM 隔离)"]:::existing
+    S7["📤 7.回写 · Auto-PR/MR Creator<br/>Revert / Patch / Hotfix ✅<br/>(stage-7: GitHub/GitLab/Gitee 三 provider + dry-run + R-4 双 App + R-12 policy)"]:::existing
     LOOP[/"开发者 review/merge → ship<br/>→ 新一轮 /observe 验证"/]:::external
 
     ORCH["🎼 Pipeline Orchestrator + Comment Policy<br/>串联 1→7 + 失败回退 + 评论分发 ✅<br/>(pipeline/v0.3.0 真闭环: issue.opened webhook → 自动跑 7 阶段 → 回贴评论)"]:::existing

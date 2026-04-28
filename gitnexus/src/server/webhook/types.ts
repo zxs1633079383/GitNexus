@@ -56,8 +56,10 @@ export type IssueTrigger = (event: ParsedWebhookEvent) => Promise<{
 
 /** webhook 路由挂载选项。 */
 export interface WebhookMountOptions {
-  /** GitHub webhook secret（HMAC sha256 共享密钥）。未设置时整条路由禁用。 */
+  /** GitHub webhook secret（HMAC sha256 共享密钥）。未设置时 GitHub 路由禁用。 */
   githubSecret?: string;
+  /** Gitee webhook 密码（X-Gitee-Token 明文）。未设置时 Gitee 路由禁用。 */
+  giteeSecret?: string;
   /** push / PR 事件触发分析（已有）。 */
   trigger: AnalyzeTrigger;
   /** issues.opened 事件触发 pipeline；省略则该事件 ack 200 但不处理。 */

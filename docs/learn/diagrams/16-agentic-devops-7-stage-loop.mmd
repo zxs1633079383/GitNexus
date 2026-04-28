@@ -3,14 +3,14 @@
 
 flowchart TB
     OBS["🔍 1.观测<br/>/observe + Jaeger + Prom"]:::existing
-    ISSUE[/"📋 GitHub/GitLab Issue<br/>traceId + service + 路径"/]:::external
+    ISSUE[/"📋 GitHub/GitLab/Gitee Issue<br/>traceId + service + 路径"/]:::external
     PRE["⚙️ pre · P1 Auto-reindex Webhook<br/>校验 last commit vs 索引快照 ✅<br/>(stage-1: HMAC + dedup 复用)"]:::existing
     S2["🎯 2.锚点 · Phase 0 Trace2Code Resolver<br/>Jaeger/OTel 双格式 + 5 层 fallback + stacktrace ✅"]:::existing
     S3["💥 3.爆炸 · GitNexus blast radius<br/>api_blast_radius depth=2 crossDepth=1 ✅"]:::existing
     S4["🔬 4.溯源 · P5 Auto Regression Forensics<br/>git log ∩ blast radius ✅"]:::existing
     S5["🧪 5.生成 · P4 E2E Test Generator<br/>unit + contract + integration ✅<br/>(R-1: scaffold + TODO 占位)"]:::existing
     S6["🚀 6.执行 · K8s Preview Env Spinner<br/>注入候选 + 跑 test ✅<br/>(stage-6: PreviewJobManager + ns 前缀守门 + R-3 异步)"]:::existing
-    S7["📤 7.回写 · Auto-PR/MR Creator<br/>Revert / Patch / Hotfix ✅<br/>(stage-7: dry-run + R-4 双 App + R-12 policy + R-14 patch-LLM 隔离)"]:::existing
+    S7["📤 7.回写 · Auto-PR/MR Creator<br/>Revert / Patch / Hotfix ✅<br/>(stage-7: GitHub/GitLab/Gitee 三 provider + dry-run + R-4 双 App + R-12 policy)"]:::existing
     LOOP[/"开发者 review/merge → ship<br/>→ 新一轮 /observe 验证"/]:::external
 
     ORCH["🎼 Pipeline Orchestrator + Comment Policy<br/>串联 1→7 + 失败回退 + 评论分发 ✅<br/>(pipeline/v0.3.0 真闭环: issue.opened webhook → 自动跑 7 阶段 → 回贴评论)"]:::existing

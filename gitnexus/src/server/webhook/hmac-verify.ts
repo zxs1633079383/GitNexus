@@ -7,6 +7,24 @@ import type { SignatureVerifyResult } from './types.js';
 const SIGNATURE_PREFIX = 'sha256=';
 
 /**
+ * Gitee webhook 默认走「密码」校验：X-Gitee-Token 头存放原始 secret 明文。
+ * 我们用 timingSafeEqual 防 timing-leak。
+ *
+ * Gitee 也支持 HMAC sha256 模式，但需用户在 Gitee 后台改成"签名"；MVP 阶段
+ * 默认走 password 模式即可（同样防 leak）。
+ */
+export function verifyGiteeToken(
+  expectedSecret: string,
+  header: string | undefined,
+): SignatureVerifyResult {
+  if (!header) return { ok: false, reason: 'missing-header' };
+  const a = Buffer.from(header);
+  const b = Buffer.from(expectedSecret);
+  if (a.length !== b.length) return { ok: false, reason: 'mismatch' };
+  return timingSafeEqual(a, b) ? { ok: true } : { ok: false, reason: 'mismatch' };
+}
+
+/**
  * 校验 GitHub HMAC sha256 签名。
  *
  * @param secret  GITNEXUS_WEBHOOK_SECRET（与 GitHub App 配置共享）

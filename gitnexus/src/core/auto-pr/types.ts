@@ -6,7 +6,7 @@
 //  · R-5 revert 前置 diff 检查：超 max_revert_diff_lines 拒绝
 //  · R-14 patch LLM 复用 callLLM 但 systemPrompt 隔离 + 强制 P0 PR Bot 二次 review
 
-export type PRProviderKind = 'github' | 'gitlab';
+export type PRProviderKind = 'github' | 'gitlab' | 'gitee';
 
 /** 一条候选修复方案 — 通常由 S5 测试 + S6 绿勾 + S4 嫌疑 commit 三方组合而来。 */
 export interface PRCandidate {

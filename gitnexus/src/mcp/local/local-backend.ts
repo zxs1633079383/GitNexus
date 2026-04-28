@@ -4046,6 +4046,7 @@ export class LocalBackend {
     const { runAutoPR, makeDryRunProvider } = await import('../../core/auto-pr/auto-pr.js');
     const { GitHubPRProvider } = await import('../../core/auto-pr/providers/github.js');
     const { GitLabPRProvider } = await import('../../core/auto-pr/providers/gitlab.js');
+    const { GiteePRProvider } = await import('../../core/auto-pr/providers/gitee.js');
 
     const candidate = params.candidate as any;
     if (!candidate || typeof candidate !== 'object') {
@@ -4064,13 +4065,18 @@ export class LocalBackend {
     let provider;
     if (dryRun) {
       // dry-run 不需要 token；用 stub provider 避免 throw
-      provider = makeDryRunProvider(providerKind as 'github' | 'gitlab');
+      provider = makeDryRunProvider(providerKind as 'github' | 'gitlab' | 'gitee');
     } else if (providerKind === 'github') {
       if (!token) return { error: 'GITNEXUS_AUTOPR_TOKEN env required for live mode' };
       provider = new GitHubPRProvider({ token });
     } else if (providerKind === 'gitlab') {
       if (!token) return { error: 'GITNEXUS_AUTOPR_TOKEN env required for live mode' };
       provider = new GitLabPRProvider({ token });
+    } else if (providerKind === 'gitee') {
+      if (!token) return { error: 'GITNEXUS_AUTOPR_TOKEN env required for live mode' };
+      // 自建/企业版 Gitee: GITEE_API_BASE 例 https://gitee.example.com/api/v5
+      const apiBase = process.env.GITEE_API_BASE;
+      provider = new GiteePRProvider({ token, apiBase });
     } else {
       return { error: `unsupported provider "${providerKind}"` };
     }
