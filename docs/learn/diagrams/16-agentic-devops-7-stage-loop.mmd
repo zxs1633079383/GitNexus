@@ -13,14 +13,14 @@ flowchart TB
     S7["📤 7.回写 · Auto-PR/MR Creator<br/>Revert / Patch / Hotfix ✅<br/>(stage-7: dry-run + R-4 双 App + R-12 policy + R-14 patch-LLM 隔离)"]:::existing
     LOOP[/"开发者 review/merge → ship<br/>→ 新一轮 /observe 验证"/]:::external
 
-    ORCH["🎼 Pipeline Orchestrator + Comment Policy<br/>串联 1→7 + 失败回退 + 评论分发 ✅<br/>(pipeline/v0.2.0 收官: S2-S7 全真跑 + S6 真 K8s + S7 默认 dryRun)"]:::existing
+    ORCH["🎼 Pipeline Orchestrator + Comment Policy<br/>串联 1→7 + 失败回退 + 评论分发 ✅<br/>(pipeline/v0.3.0 真闭环: issue.opened webhook → 自动跑 7 阶段 → 回贴评论)"]:::existing
     WIKI["📚 P3 Auto Wiki<br/>(side-effect)"]:::side
     P2["🔗 P2 Multi-hop crossDepth>1<br/>(并行：Stage 3 增强)"]:::parallel
     P6["🐫 P6 OCaml LanguageProvider<br/>(并行：语言扩展)"]:::parallel
 
     OBS -->|发现 error / 慢响应| ISSUE
-    ISSUE -->|webhook issue.opened| PRE
-    PRE -->|图最新| S2
+    ISSUE -->|webhook issues.opened ✅| PRE
+    PRE -->|图最新 → ORCH 自动调 run_pipeline ✅| S2
     S2 -->|symbol UID| S3
     S3 -->|blast radius| S4
     S4 -->|嫌疑提交 Top 3| S5
@@ -29,7 +29,7 @@ flowchart TB
     S7 --> LOOP
     LOOP -.->|闭环| OBS
 
-    ORCH -.->|管控| PRE
+    ORCH -.->|issue.opened 自动调 run_pipeline| PRE
     ORCH -.->|管控| S2
     ORCH -.->|管控| S4
     ORCH -.->|管控| S5

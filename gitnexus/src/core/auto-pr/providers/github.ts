@@ -146,4 +146,19 @@ export class GitHubPRProvider implements PRProvider {
     );
     if (!r.ok) throw new Error(`addLabels failed: ${r.status} ${await r.text()}`);
   }
+
+  async postIssueComment(opts: {
+    owner: string;
+    repo: string;
+    issueNumber: number;
+    body: string;
+  }): Promise<{ url?: string }> {
+    const r = await this.fetch(
+      `/repos/${opts.owner}/${opts.repo}/issues/${opts.issueNumber}/comments`,
+      { method: 'POST', body: JSON.stringify({ body: opts.body }) },
+    );
+    if (!r.ok) throw new Error(`postIssueComment failed: ${r.status} ${await r.text()}`);
+    const j = (await r.json()) as any;
+    return { url: j.html_url };
+  }
 }

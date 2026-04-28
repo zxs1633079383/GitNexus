@@ -2,9 +2,9 @@
 
 > 作者：GitNexus 核心维护者视角
 > 日期：2026-04-28
-> 状态：**🎯 收官之战完成**（9 个 tag：phase-0 / stage-1/3/4/5/6/7 / pipeline/v0.1.0 + pipeline/v0.2.0；R-1~R-18 review 修正点全落地，R-2 显式 backlog）
-> 端到端 e2e: 真 Jaeger trace → 真 K8s busybox preview → 真 auto-pr (dryRun) 链路 66.5s 跑通
-> 剩余 backlog：① 真发一次 live PR（需用户提供 fork + token）② P2/P3/P6 / R-2 (并行线，闭环不依赖)
+> 状态：**🎯 真闭环完成**（10 个 tag：phase-0 / stage-1/3/4/5/6/7 / pipeline v0.1/v0.2/v0.3）
+> 自动闭环触发链路: /observe 建 issue → webhook issues.opened → 自动跑 7 阶段 → 回贴评论 + dryRun PR/MR
+> 剩余 backlog：① 用户提供 token 翻 live 真发 PR  ② Gitee provider（30 分钟工作量）③ P2/P3/P6 / R-2 (并行线，闭环不依赖)
 > 上一版：`docs/learn/PR-Review-Bot-方案.md`（2026-04-26，P0 PR Review Bot 已上线）
 
 ---
@@ -47,14 +47,14 @@ flowchart TB
     S7["📤 7.回写 · Auto-PR/MR Creator<br/>Revert / Patch / Hotfix ✅<br/>(stage-7: dry-run + R-4 双 App + R-12 policy + R-14 patch-LLM 隔离)"]:::existing
     LOOP[/"开发者 review/merge → ship<br/>→ 新一轮 /observe 验证"/]:::external
 
-    ORCH["🎼 Pipeline Orchestrator + Comment Policy<br/>串联 1→7 + 失败回退 + 评论分发 ✅<br/>(pipeline/v0.2.0 收官: S2-S7 全真跑 + S6 真 K8s + S7 默认 dryRun)"]:::existing
+    ORCH["🎼 Pipeline Orchestrator + Comment Policy<br/>串联 1→7 + 失败回退 + 评论分发 ✅<br/>(pipeline/v0.3.0 真闭环: issue.opened webhook → 自动跑 7 阶段 → 回贴评论)"]:::existing
     WIKI["📚 P3 Auto Wiki<br/>(side-effect)"]:::side
     P2["🔗 P2 Multi-hop crossDepth>1<br/>(并行：Stage 3 增强)"]:::parallel
     P6["🐫 P6 OCaml LanguageProvider<br/>(并行：语言扩展)"]:::parallel
 
     OBS -->|发现 error / 慢响应| ISSUE
-    ISSUE -->|webhook issue.opened| PRE
-    PRE -->|图最新| S2
+    ISSUE -->|webhook issues.opened ✅| PRE
+    PRE -->|图最新 → ORCH 自动调 run_pipeline ✅| S2
     S2 -->|symbol UID| S3
     S3 -->|blast radius| S4
     S4 -->|嫌疑提交 Top 3| S5
@@ -63,7 +63,7 @@ flowchart TB
     S7 --> LOOP
     LOOP -.->|闭环| OBS
 
-    ORCH -.->|管控| PRE
+    ORCH -.->|issue.opened 自动调 run_pipeline| PRE
     ORCH -.->|管控| S2
     ORCH -.->|管控| S4
     ORCH -.->|管控| S5

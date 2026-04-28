@@ -56,17 +56,24 @@ export interface AutoPRPolicy {
   require_stage6_pass: boolean;
 }
 
-/** Provider 抽象 — 收窄到核心 4 操作 (R-10)，merge queue 不抽象不触碰。 */
+/** Provider 抽象 — 收窄到核心 5 操作 (R-10)，merge queue 不抽象不触碰。 */
 export interface PRProvider {
   kind: PRProviderKind;
   /** 创建 branch（如已存在返回 existing 标记，由 branch-manager 决定要不要后缀）。 */
   ensureBranch(opts: EnsureBranchOpts): Promise<EnsureBranchResult>;
   /** 写文件（一次一文件）。 */
   putFile(opts: PutFileOpts): Promise<void>;
-  /** 创建 PR / MR。 */
+  /** 创建 PR (GitHub/Gitee) / MR (GitLab)。 */
   createPR(opts: CreatePROpts): Promise<CreatePRResult>;
   /** 加标签 + 关联 issue（如 issueRef 提供）。 */
   addLabels(opts: { owner: string; repo: string; prNumber: number; labels: string[] }): Promise<void>;
+  /** 在 issue 上贴评论 — Loop 闭环用：把 PipelineReport 自动回贴到原 issue */
+  postIssueComment(opts: {
+    owner: string;
+    repo: string;
+    issueNumber: number;
+    body: string;
+  }): Promise<{ url?: string }>;
 }
 
 export interface EnsureBranchOpts {

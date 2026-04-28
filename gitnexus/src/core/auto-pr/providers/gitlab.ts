@@ -138,4 +138,21 @@ export class GitLabPRProvider implements PRProvider {
     );
     if (!r.ok) throw new Error(`addLabels failed: ${r.status} ${await r.text()}`);
   }
+
+  async postIssueComment(opts: {
+    owner: string;
+    repo: string;
+    issueNumber: number;
+    body: string;
+  }): Promise<{ url?: string }> {
+    const pid = this.projectId(opts.owner, opts.repo);
+    const r = await this.fetch(`/projects/${pid}/issues/${opts.issueNumber}/notes`, {
+      method: 'POST',
+      body: JSON.stringify({ body: opts.body }),
+    });
+    if (!r.ok) throw new Error(`postIssueComment failed: ${r.status} ${await r.text()}`);
+    const j = (await r.json()) as any;
+    // GitLab note 返回不直接带 web_url；构造 issue URL + #note_<id>
+    return { url: `${this.apiBase.replace('/api/v4', '')}/${opts.owner}/${opts.repo}/-/issues/${opts.issueNumber}#note_${j.id}` };
+  }
 }

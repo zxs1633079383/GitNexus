@@ -1381,16 +1381,63 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   });
 
   // P1: webhook 路由 — 仅当 GITNEXUS_WEBHOOK_SECRET 已配置时挂载
+  // L (Loop 闭环): 同时注入 issueTrigger，issues.opened 时自动跑 7 阶段 pipeline
   mountWebhookRoutes(app, {
     githubSecret: process.env.GITNEXUS_WEBHOOK_SECRET,
     trigger: async (event) => {
-      // 复用 JobManager dedup（Fix-3）+ 共用 fork pipeline
       const job = jobManager.createJob({ repoUrl: event.cloneUrl });
       if (job.status !== 'queued') {
         return { jobId: job.id, status: job.status, reason: 'dedup' };
       }
       runAnalyzePipeline(job, { repoUrl: event.cloneUrl });
       return { jobId: job.id, status: job.status, reason: 'fresh' };
+    },
+    issueTrigger: async (event) => {
+      const { handleIssueOpened } = await import('../core/observability/issue-handler.js');
+      const { GitHubPRProvider } = await import('../core/auto-pr/providers/github.js');
+      const { GitLabPRProvider } = await import('../core/auto-pr/providers/gitlab.js');
+      const token = process.env.GITNEXUS_AUTOPR_TOKEN ?? '';
+      // provider kind 推断：默认 github；GITNEXUS_PROVIDER=gitlab 切 GitLab
+      const providerKind = process.env.GITNEXUS_PROVIDER ?? 'github';
+      const provider =
+        providerKind === 'gitlab' && token
+          ? new GitLabPRProvider({ token })
+          : token
+          ? new GitHubPRProvider({ token })
+          : null;
+
+      const r = await handleIssueOpened(
+        {
+          fullName: event.fullName,
+          issueNumber: event.issueNumber ?? 0,
+          issueTitle: event.issueTitle ?? '',
+          issueBody: event.issueBody ?? '',
+          issueLabels: event.issueLabels ?? [],
+        },
+        {
+          // runPipeline 通过 backend.runPipeline (private)，这里走 dispatcher
+          runPipeline: async (input) =>
+            (await backend.callTool(
+              'run_pipeline',
+              input as unknown as Record<string, unknown>,
+            )) as any,
+          postIssueComment: async (a) => {
+            if (!provider) {
+              console.warn(
+                '[issue-handler] no GITNEXUS_AUTOPR_TOKEN; skip postIssueComment',
+              );
+              return { url: undefined };
+            }
+            return await provider.postIssueComment(a);
+          },
+        },
+      );
+      return {
+        ok: r.ok,
+        pipelineStarted: r.pipelineStarted,
+        reason: r.reason,
+        commentUrl: r.commentUrl,
+      };
     },
   });
 

@@ -28,6 +28,7 @@ export function makeDryRunProvider(kind: PRProviderKind): PRProvider {
       return { prNumber: 0, url: `dry-run://no-pr`, branch: opts.head };
     },
     async addLabels() { /* no-op */ },
+    async postIssueComment() { return { url: 'dry-run://no-comment' }; },
   };
 }
 

@@ -60,6 +60,37 @@ export function parseGitHubEvent(
     };
   }
 
+  if (eventName === 'issues') {
+    const p = body as {
+      action?: string;
+      issue?: {
+        number?: number;
+        title?: string;
+        body?: string;
+        labels?: Array<{ name?: string } | string>;
+      };
+      repository?: RawRepo;
+    };
+    if (p.action !== 'opened' && p.action !== 'reopened') return null;
+    const cloneUrl = pickCloneUrl(p.repository);
+    const num = p.issue?.number;
+    if (!cloneUrl || typeof num !== 'number') return null;
+    const labels = (p.issue?.labels ?? [])
+      .map((l) => (typeof l === 'string' ? l : l.name ?? ''))
+      .filter(Boolean);
+    return {
+      kind: 'issue_opened',
+      cloneUrl,
+      fullName: p.repository?.full_name ?? '',
+      headSha: '',
+      issueNumber: num,
+      issueTitle: p.issue?.title ?? '',
+      issueBody: p.issue?.body ?? '',
+      issueLabels: labels,
+      deliveryId,
+    };
+  }
+
   if (eventName === 'pull_request') {
     const p = body as PRPayload;
     const cloneUrl = pickCloneUrl(p.repository);

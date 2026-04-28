@@ -62,6 +62,29 @@ export function mountWebhookRoutes(app: Express, opts: WebhookMountOptions): voi
     }
 
     try {
+      // issue_opened 走独立 trigger（如果配置了）
+      if (event.kind === 'issue_opened') {
+        if (!opts.issueTrigger) {
+          res.status(202).json({
+            ok: true,
+            kind: 'issue_opened',
+            ignored: 'no issueTrigger configured',
+          });
+          return;
+        }
+        const r = await opts.issueTrigger(event);
+        res.status(202).json({
+          ok: r.ok,
+          kind: 'issue_opened',
+          repo: event.fullName,
+          issueNumber: event.issueNumber,
+          pipelineStarted: r.pipelineStarted,
+          reason: r.reason,
+          commentUrl: r.commentUrl,
+        });
+        return;
+      }
+
       const result = await opts.trigger(event);
       res.status(202).json({
         ok: true,
