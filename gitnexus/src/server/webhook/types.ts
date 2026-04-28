@@ -58,6 +58,8 @@ export type IssueTrigger = (event: ParsedWebhookEvent) => Promise<{
 export interface WebhookMountOptions {
   /** GitHub webhook secret（HMAC sha256 共享密钥）。未设置时 GitHub 路由禁用。 */
   githubSecret?: string;
+  /** GitLab webhook secret（X-Gitlab-Token 明文）。未设置时 GitLab 路由禁用。 */
+  gitlabSecret?: string;
   /** Gitee webhook 密码（X-Gitee-Token 明文）。未设置时 Gitee 路由禁用。 */
   giteeSecret?: string;
   /** push / PR 事件触发分析（已有）。 */

@@ -7,13 +7,13 @@ import type { SignatureVerifyResult } from './types.js';
 const SIGNATURE_PREFIX = 'sha256=';
 
 /**
- * Gitee webhook 默认走「密码」校验：X-Gitee-Token 头存放原始 secret 明文。
- * 我们用 timingSafeEqual 防 timing-leak。
+ * 明文 token 校验（GitLab / Gitee 通用）：header 直接放 secret 原文。
+ * 用 timingSafeEqual 防 timing-leak。
  *
- * Gitee 也支持 HMAC sha256 模式，但需用户在 Gitee 后台改成"签名"；MVP 阶段
- * 默认走 password 模式即可（同样防 leak）。
+ * - GitLab: X-Gitlab-Token 头默认就是明文 secret（Webhook Settings 配置）
+ * - Gitee: X-Gitee-Token 头默认明文模式（"密码"模式）；签名模式不在此处理
  */
-export function verifyGiteeToken(
+export function verifyPlainToken(
   expectedSecret: string,
   header: string | undefined,
 ): SignatureVerifyResult {
@@ -23,6 +23,11 @@ export function verifyGiteeToken(
   if (a.length !== b.length) return { ok: false, reason: 'mismatch' };
   return timingSafeEqual(a, b) ? { ok: true } : { ok: false, reason: 'mismatch' };
 }
+
+/** Gitee 别名 — 对外保留命名兼容。 */
+export const verifyGiteeToken = verifyPlainToken;
+/** GitLab 别名 — 对外语义清晰。 */
+export const verifyGitLabToken = verifyPlainToken;
 
 /**
  * 校验 GitHub HMAC sha256 签名。

@@ -1384,6 +1384,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // L (Loop 闭环): 同时注入 issueTrigger，issues.opened 时自动跑 7 阶段 pipeline
   mountWebhookRoutes(app, {
     githubSecret: process.env.GITNEXUS_WEBHOOK_SECRET,
+    gitlabSecret: process.env.GITNEXUS_GITLAB_SECRET,
     giteeSecret: process.env.GITNEXUS_GITEE_SECRET,
     trigger: async (event) => {
       const job = jobManager.createJob({ repoUrl: event.cloneUrl });
@@ -1409,7 +1410,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             apiBase: process.env.GITEE_API_BASE,
           });
         } else if (providerKind === 'gitlab') {
-          provider = new GitLabPRProvider({ token });
+          provider = new GitLabPRProvider({
+            token,
+            apiBase: process.env.GITLAB_API_BASE,
+          });
         } else {
           provider = new GitHubPRProvider({ token });
         }
@@ -1655,6 +1659,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       if (process.env.GITNEXUS_WEBHOOK_SECRET) {
         console.log(
           `  webhook  POST http://${displayHost}:${port}/webhook/github (HMAC sha256)`,
+        );
+      }
+      if (process.env.GITNEXUS_GITLAB_SECRET) {
+        console.log(
+          `  webhook  POST http://${displayHost}:${port}/webhook/gitlab (X-Gitlab-Token plain)`,
         );
       }
       if (process.env.GITNEXUS_GITEE_SECRET) {
