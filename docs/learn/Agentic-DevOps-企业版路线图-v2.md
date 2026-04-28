@@ -13,31 +13,54 @@
 
 > **把整个研发生命周期，从"人驱动的流程"翻译成"Agent 可执行的协议"。**
 
-GitNexus 在这个目标里扮演**确定性知识基础设施**——给 Agent 提供"代码的真相"，是闭环里**唯一不靠 LLM 的层**。Synapse 的编排会抖动，TraceWeaver 的观测会缺失，但 GitNexus 给的"X 改动会影响 Y"是**索引时算好的事实**，可以被 Agent 当作硬约束信任。
+GitNexus 在这个目标里扮演**确定性知识基础设施**——给 Agent 提供"代码的真相"，是闭环里**唯一不靠 LLM 的层**。上层编排会抖动、观测会缺失、LLM 输出会幻觉，但 GitNexus 给的"X 改动会影响 Y"是**索引时算好的事实**，可以被 Agent 当作硬约束信任。
 
-### 0.2 Agentic DevOps 闭环（六动词 → 进化）
+### 0.2 运行时闭环 —— 巡检 → 归一化 → 取证 → 反馈
+
+> 编码侧的 coding 闭环（brainstorm / plan / exec / review / ship）由独立的编排系统主导，不在本路线图范围。
+> **本 v2 路线图聚焦运行时侧**：业务出错 → trace → 取证 → 反馈给开发者 / 编排修复 / 蒸馏成 Skill。
 
 ```
-                  ┌─ Synapse ────────────────────┐  编排 + 调度
-                  │ brainstorm → plan → exec     │
-                  │   → review → ship            │
-                  └──────────┬───────────────────┘
-                             │ 用 ↓ 拿"代码真相"
-              ┌──────────────┴──────────────┐
-              │  GitNexus（知识基础设施）     │  跨仓真相 + 影响半径
-              │  · 32 节点表知识图           │  → 给 Agent 喂"结构化记忆"
-              │  · 跨仓 contract registry    │     而非 RAG 概率匹配
-              │  · impact / api_impact       │
-              └──────────────┬──────────────┘
-                             │ 反喂 trace
-              ┌──────────────┴──────────────┐
-              │  Jaeger + OTel（观测层）     │  观测 + 反馈
-              │  · OTel auto-instrument      │  → 喂回 Trace2Skill 蒸馏
-              │  · Jaeger Query API          │
-              └─────────────────────────────┘
+   业务 app（OTel auto-instrument，业务零侵入）
+         │ 发 spans
+         ▼
+   Jaeger（trace 后端存储）
+         │ ① 巡检发现 error / 高响应时间
+         ▼
+   失败 trace span
+   （http.route / url.path / exception.stacktrace 三件套）
+         │ ② 推给 GitNexus（被动推模式，caller POST）
+         ▼
+   ┌──────────────────────────────────┐
+   │ Phase 0  Jaeger Span Normalizer  │ ③ 归一化
+   │ - Jaeger tags[] ↔ OTel attrs{}   │   双格式自动 detect
+   │ - 5 层 HTTP fallback             │   多版本 OTel conv
+   │ - stacktrace 顶帧反查（独有）    │   异常栈兜底
+   └──────────────┬───────────────────┘
+                  │ handler symbol UID
+                  ▼
+   ┌──────────────────────────────────┐
+   │ P5 Auto Regression Forensics     │ ④ 取证
+   │ - impact(handler, upstream)      │   反向 BFS（谁依赖我）
+   │ - impact(handler, downstream)    │   下游波及面
+   │ - detect_changes(HEAD~N..HEAD)   │   近期变更符号
+   │ - 文件路径过滤（防误报）         │   只交叉 handler 所在文件
+   │ - 时间近度 × confidence 排序      │   嫌疑度打分
+   └──────────────┬───────────────────┘
+                  │ 嫌疑提交清单
+                  ▼
+       commit hash + 改了哪个 method + 距 trace 时间多久
+                  │
+                  ├─► ⑤a 推给开发者：直接定位修复点
+                  ├─► ⑤b 推给 coding 编排：自动开 fix 分支
+                  └─► ⑤c 喂 Trace2Skill：蒸馏成"如何排查 X 类故障"Skill
+
+   闭环咬合：修复 ship 后 → 新一轮巡检验证 → 重复
 ```
 
-**六动词**：调度 / 编排 / 观测 / 约束 / 反馈 / 愿景 → **进化**
+**GitNexus 在这条链上的位置**：从"trace span 抵达 GitNexus"那一刻开始，**全程确定性反查**——
+不调 LLM，不做概率匹配，每一步都基于索引时算好的事实图谱。caller 拿到的"嫌疑提交"不是猜的，
+是图上**真实存在的依赖边**。
 
 ### 0.3 用户描绘的 ideal state
 
