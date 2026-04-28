@@ -287,6 +287,43 @@ review 抓出 **2 处硬 bug + 4 处细节**，已经全部合入：
 | Fix-8 | 低 | P4 BFS 没说防递归 | `process-traversal.ts` BFS 加 visited set | — |
 | Fix-9 | 低 | P5 主动拉 Jaeger 假设过重 | 改**被动推**：caller POST span 数组进 MCP tool | — |
 
+### 2.3 Stage 5 / 6 / 7 评审修正点（gitnexus-dev 第二轮 review）
+
+新增 Stage 5（E2E Test Gen 升级）/ 6（K8s Preview Env）/ 7（Auto-PR）后，gitnexus-dev 抓出 **6 高 + 8 中 + 4 低** 风险。**3 个高风险必须在动工前拍板，不是实现时再说**：
+
+#### 🔴 高风险 Top 6（必须修）
+
+| # | Stage | 问题 | 修正方案 |
+|---|---|---|---|
+| **R-1** | 5 | **fixture 数据从静态调用链推断不出来**（DB 外键 / 微服务 mock schema）| `integration-gen` 降期望：先生成"调用链结构骨架 + TODO 占位"，**不强求自动填值域**。Stage 6 验证目标改为"调用链能不能通"，业务正确性留给开发者补 |
+| **R-2** | 6 | **嫌疑提交回滚版镜像可能根本不存在**（CI 已 GC、tag 已删）| `image-injector.ts` 三级降级：1) `image:<sha>` 精确拉；2) 查 CI artifact 缓存 layer；3) on-demand `docker build --target test`；4) 全失败 → Stage 6 跳过，Stage 7 降 Hotfix 占位 |
+| **R-3** | 6 | **`validate_in_preview` 同步等结果在 MCP 协议下不现实**（拉起 30-120s + 跑 test 几分钟）| 改异步 job 模式：tool 立刻返回 `{jobId, statusUrl}`，加新 tool `check_preview_status({jobId})` 轮询。Pipeline Orchestrator 编排等待逻辑 |
+| **R-4** | 7 | **GitHub App 加 `workflows:write` 权限是 sensitive escalation**（LLM 幻觉 patch 写恶意 CI 步骤危害极大）| **拆两个 App**：App-1 = 现有 P0 PR Bot 只 read；App-2 = 新建 Auto-PR 仅 `contents:write`，**不授予 `workflows:write`**。`auto-pr-policy.yaml` 默认 block `.github/workflows/**` |
+| **R-5** | 7 | **Revert 模式对 squash merge 处理脆弱**（commit hash 不在历史 / 大量 conflict）| `branch-manager.ts` 加前置检测：`git log <hash>^..<hash>` 验证可达 + diff 行数超 `max_revert_diff_lines`（默认 200）→ 自动降级 Patch；Patch 不可行 → 降 Hotfix 占位 |
+| **R-6** | 5 | **LLM 在 query-time 调用必须严格隔离 index-time**（防 `analyze-worker.ts` 误调） | `process-traversal.ts` / `test-gen/llm-client.ts` 文件头加 `// query-only — must not be called from any pipeline phase` 注释；CI lint 规则禁止从 `core/ingestion/**` import `core/test-gen/**` |
+
+#### 🟡 中风险 Top 8（动工前 spike 确认）
+
+| # | Stage | 问题 | 修正方案 |
+|---|---|---|---|
+| R-7 | 5 | `test-planner.ts` 三层规划算法未定义 | 明确判决规则：**Unit** = 节点是 Method/Function 且无 STEP_IN_PROCESS 出边；**Contract** = 节点有 ContractLink 边；**Integration** = ENTRY_POINT_OF → STEP_IN_PROCESS 链路 ≥2 跳的 Process |
+| R-8 | 6 | vCluster CRD 冲突 | MVP 禁用 CRD sync（`sync.fromHost.crds.enabled: false`），只同步 `Deployment/Service/ConfigMap/Secret` |
+| R-9 | 6 | namespace TTL 泄漏 | spinner 创建时写 `preview-env-registry.json`（namespace + createdAt + ttlSec + issueId）；独立 cron 扫 registry 超 TTL 销毁 |
+| R-10 | 7 | 单层 provider 抽象不够 | 抽象边界收窄：`createPR/createMR + addLabel + linkIssue + setDraft`；review threads 各平台 provider 自己处理；**merge queue 不抽象不触碰** |
+| R-11 | 7 | 同 issueId 重新触发分支冲突 | `branch-manager.ts` 创建前 `git ls-remote --heads`；存在则后缀 `-<ts>`，PR body 注明前一次尝试 |
+| R-12 | 7 | `auto-pr-policy.yaml` schema 空白 | 补最小字段集（见 §3.8 yaml）：`allowed_paths` / `blocked_paths` / `max_revert_diff_lines` / `max_patch_diff_lines` / `require_stage6_pass` / `blocked_file_extensions`（默认含 `.env / .pem / .key / .github/workflows/**`）|
+| R-13 | 5 | N×M 语言×框架适配器爆炸 | 用 `satisfies Record<SupportedLanguages, TestAdapter>`（参考 `core/ingestion/languages/index.ts`），漏语言变成编译错误 |
+| R-14 | 7 | Patch LLM 与 Stage 5 LLM client 共用但需 prompt 隔离 + 强制 P0 PR Bot 二次 review | 共用 `callLLM` 函数，不同 systemPrompt；Pipeline Orchestrator 显式 wire P0 PR Bot 二次 review 依赖 |
+
+#### 🟢 低风险 4 项（实现时记得做）
+
+| # | Stage | 问题 | 修正方案 |
+|---|---|---|---|
+| R-15 | 6 | 跨语言 test 结果格式不一 | 统一 JUnit XML：JUnit5（Java）原生；Go 用 `go-junit-report`；Jest 用 `jest-junit`；`result-collector.ts` 只 parse JUnit XML |
+| R-16 | 6 | 失败回退到 docker-compose（无 K8s 团队）| spinner 抽象层留 `docker-compose adapter` 占位，无 K8s 也能跑 |
+| R-17 | 7 | GitLab Draft PR API 兼容（v4 ≥15.x）| GitLab provider 检查 API 版本，旧版本 fallback 到 `WIP:` 前缀 |
+| R-18 | 5 | LLM 调用超时 / 重试 | 复用 `core/wiki/llm-client.ts` 已有 retry 逻辑（不重新实现）|
+
 ---
 
 ## 3. 各功能详细实现方案
@@ -434,6 +471,8 @@ async function regressionForensics(spans: NormalizedSpan[], opts) {
 
 ### 3.6 Stage 5 · P4 E2E Test Generator（升级关键路径，三层测试）
 
+> ⚠️ 本节关联 review 修正点：**R-1**（fixture 降期望）、**R-6**（LLM index-time 隔离）、**R-7**（test-planner 算法）、**R-13**（适配器 satisfies）、**R-18**（LLM retry 复用）
+
 **目标**：从 Stage 4 嫌疑提交 + Stage 3 blast radius 出发，生成 **unit + contract + integration** 三层可执行测试，给 Stage 6 K8s preview env 跑。
 
 **为什么从"并行 / 选 B 外挂"升级到关键路径**：原方案只输出调用链 JSON 让 caller 自带 LLM 生 fixture——但 7 阶段闭环要求 **GitNexus 自己产出可执行 test 文件**，给 Stage 6 直接消费。所以必须内置 LLM 调用层（**仅在 query 时，不在 index 时——保住"no LLM at index time"卖点**）。
@@ -452,6 +491,8 @@ async function regressionForensics(spans: NormalizedSpan[], opts) {
 **关键设计**：调用链 JSON（原 B 方案产物）作为**中间表示**，三个生成器都以它为输入——保持架构清晰，未来想换 LLM 提供商或外挂只换 generator 那一层。
 
 ### 3.7 Stage 6 · K8s Preview Env Spinner（部署侧新组件）
+
+> ⚠️ 本节关联 review 修正点：**R-2**（镜像三级降级）、**R-3**（异步 job 模式）、**R-8**（vCluster CRD 禁同步）、**R-9**（preview-env-registry GC）、**R-15**（JUnit XML 统一）、**R-16**（docker-compose 降级）
 
 **目标**：拉起 preview env，注入 Stage 4 嫌疑提交的回滚版本，跑 Stage 5 生成的 test，验证 hypothesis。
 
@@ -484,6 +525,8 @@ async function regressionForensics(spans: NormalizedSpan[], opts) {
 > 这一步最多依赖你团队的 K8s 现状。**如果团队无 K8s，Stage 6 可降级为"本地 docker-compose 跑测试"，闭环仍然成立**。
 
 ### 3.8 Stage 7 · Auto-PR/MR Creator（平台侧新组件）
+
+> ⚠️ 本节关联 review 修正点：**R-4**（拆两个 GitHub App）、**R-5**（Revert 前置 diff 检查 + 降级链）、**R-10**（provider 抽象边界收窄）、**R-11**（分支冲突 ts 后缀）、**R-12**（policy.yaml schema）、**R-14**（Patch LLM 复用 + 强制 P0 PR Bot 二次 review）、**R-17**（GitLab Draft API 版本 fallback）
 
 **目标**：把 Stage 4-6 的产出（嫌疑提交 + test 文件 + 验证结果）打包成一个 PR/MR，自动开到代码仓。
 
