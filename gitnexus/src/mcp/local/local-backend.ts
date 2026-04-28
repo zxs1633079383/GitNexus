@@ -677,6 +677,8 @@ export class LocalBackend {
         return this.toolMap(repo, params);
       case 'api_impact':
         return this.apiImpact(repo, params);
+      case 'resolve_span':
+        return this.resolveSpanToHandler(repo, params as { span: any });
       default:
         throw new Error(`Unknown tool: ${method}`);
     }
@@ -3591,6 +3593,112 @@ export class LocalBackend {
     }
 
     return { routes: results, total: results.length };
+  }
+
+  // ─── Phase 0 / Stage 2 · Trace2Code Resolver (query-only) ───────
+  //
+  // Span (Jaeger / OTel) → handler symbol UID。
+  // RULES §0.4: 仅在 query-time 调用，**绝不**进 ingestion 管线。
+  // 调用链:
+  //   normalizeJaegerSpan(span) → NormalizedSpan
+  //     → 1) HTTP / gRPC / topic 走 Route 节点反查 (graph 命中 = 强信号)
+  //     → 2) code.* 或 stacktrace 顶帧走 Method 直查 (file + name 双键)
+  //     → 3) 都不命中: kind='unknown', resolvedBy='none' (Stage 4 可降级)
+  private async resolveSpanToHandler(
+    repo: RepoHandle,
+    params: { span: import('../../core/observability/jaeger-span-types.js').SpanInput },
+  ): Promise<import('../../core/observability/jaeger-span-types.js').ResolveOutcome> {
+    const { normalizeJaegerSpan } = await import(
+      '../../core/observability/jaeger-span-normalizer.js'
+    );
+    const norm = normalizeJaegerSpan(params.span);
+
+    // Route 节点反查 (HTTP / gRPC / topic 共享同一套 Route → handler 映射)
+    if (norm.contractId && (norm.kind === 'http' || norm.kind === 'grpc' || norm.kind === 'topic')) {
+      await this.ensureInitialized(repo.id);
+      // Route.name 存的是 path (HTTP) 或 contract id 后缀 (gRPC/topic)。
+      // 容错: 同时按 path + contractId 查一次, 命中谁算谁。
+      const candidates: string[] = [];
+      if (norm.path) candidates.push(norm.path);
+      if (norm.contractId) candidates.push(norm.contractId);
+      const rows = await executeParameterized(
+        repo.id,
+        `MATCH (handlerFile:File)-[r:CodeRelation {type: 'HANDLES_ROUTE'}]->(route:Route)
+         WHERE route.name IN $names
+         OPTIONAL MATCH (handlerFile)<-[:CodeRelation {type: 'CONTAINS'}]-(sym)
+         WHERE sym.startLine IS NOT NULL AND (labels(sym) CONTAINS 'Method' OR labels(sym) CONTAINS 'Function')
+         RETURN handlerFile.id AS fileId, handlerFile.filePath AS filePath,
+                sym.id AS symUid, sym.name AS symName
+         LIMIT 25`,
+        { names: candidates },
+      );
+      if (rows.length > 0) {
+        // 选第一个有 symUid 的, fallback 到 fileId
+        const withSym = (rows as any[]).find((r) => (r.symUid ?? r[2]) != null);
+        const symbolUid =
+          (withSym?.symUid ?? withSym?.[2]) ?? ((rows[0] as any).fileId ?? (rows[0] as any)[0]);
+        return {
+          kind: norm.kind,
+          contractId: norm.contractId,
+          symbolUid: symbolUid as string,
+          hops: norm.hops,
+          resolvedBy: 'route-lookup',
+          errorEvent: norm.errorEvent,
+        };
+      }
+    }
+
+    // code.* 或 stacktrace fallback: file basename + class.method 双键直查 Method
+    if (norm.kind === 'code' && (norm.codeFunction || norm.codeFilePath)) {
+      await this.ensureInitialized(repo.id);
+      const fnName = (norm.codeFunction ?? '').includes('.')
+        ? (norm.codeFunction as string).split('.').pop()!
+        : norm.codeFunction;
+      const fileBase = norm.codeFilePath ?? '';
+      const params2: Record<string, string> = {};
+      const where: string[] = [];
+      if (fnName) {
+        params2.name = fnName;
+        where.push('n.name = $name');
+      }
+      if (fileBase) {
+        params2.file = fileBase;
+        where.push('n.filePath CONTAINS $file');
+      }
+      if (where.length === 0) {
+        return {
+          kind: 'unknown',
+          hops: norm.hops,
+          resolvedBy: 'none',
+          errorEvent: norm.errorEvent,
+        };
+      }
+      const rows = await executeParameterized(
+        repo.id,
+        `MATCH (n) WHERE (labels(n) CONTAINS 'Method' OR labels(n) CONTAINS 'Function')
+         AND ${where.join(' AND ')}
+         RETURN n.id AS uid LIMIT 5`,
+        params2,
+      );
+      if (rows.length > 0) {
+        const uid = ((rows[0] as any).uid ?? (rows[0] as any)[0]) as string;
+        return {
+          kind: 'code',
+          symbolUid: uid,
+          hops: norm.hops,
+          resolvedBy: norm.hops.includes('stacktrace') ? 'stacktrace' : 'code-attr',
+          errorEvent: norm.errorEvent,
+        };
+      }
+    }
+
+    return {
+      kind: norm.kind,
+      contractId: norm.contractId,
+      hops: norm.hops,
+      resolvedBy: 'none',
+      errorEvent: norm.errorEvent,
+    };
   }
 
   // ─── Direct Graph Queries (for resources.ts) ────────────────────

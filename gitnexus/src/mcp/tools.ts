@@ -508,4 +508,57 @@ WHEN TO USE: After changing group.yaml or re-indexing member repos.`,
       required: ['name'],
     },
   },
+  // ─── Phase 0 / Stage 2 · Trace2Code Resolver ────────────────────────
+  // 把一条 Jaeger / OTel span (双格式) 翻译成 handler symbol UID。
+  // 是 7 阶段 Agentic DevOps 闭环的"锚点层"——所有 trace → 代码反查的起点。
+  // 业务零侵入 (RULES §0.3): 输入用 OTel auto-instrument 的标准字段。
+  {
+    name: 'resolve_span',
+    description: `Map a Jaeger/OTel span to a code handler symbol (Phase 0 — Trace2Code Resolver).
+
+Accepts either a single span or a Jaeger Query API envelope { data: [{ spans: [...] }] }.
+Supports two attribute containers:
+- Jaeger:  span.tags = [{key, value}, ...]
+- OTel:    span.attributes = {"http.route": "...", ...}
+
+5-layer HTTP fallback chain (high → low priority):
+  1. http.route      framework template (most precise)
+  2. url.path        OTel ≥1.21 new conv
+  3. url.full        OTel ≥1.21 full URL (path stripped out)
+  4. http.url        OTel ≤1.20 old conv (path stripped out)
+  5. http.target     legacy
+
+Other kinds: gRPC (rpc.service + rpc.method) / topic (messaging.destination) /
+code.function + code.filepath / OTel exception event top frame.
+
+Output:
+- kind:        'http' | 'grpc' | 'topic' | 'code' | 'unknown'
+- contractId:  for HTTP this is http::<METHOD>::<consumer-normalized path>
+               (numeric segments → {param}, lowercase) — used to look up Route nodes.
+- symbolUid:   GitNexus symbol UID (when graph lookup succeeds)
+- hops:        which fallback layer matched (diagnostic)
+- resolvedBy:  'route-lookup' | 'stacktrace' | 'code-attr' | 'none'
+- errorEvent:  parsed OTel exception event with stacktrace top frame
+
+WHEN TO USE: trace observed an error → caller hands off the span here →
+output feeds Stage 3 (impact / blast radius) and Stage 4 (regression forensics).
+
+NOTE: This tool is query-time only. The normalizer never runs in the ingestion
+pipeline (RULES §0.4 LLM-boundary equivalent).`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        span: {
+          type: 'object',
+          description:
+            'Jaeger span or full Jaeger Query API envelope. Both tags[] and attributes{} are accepted.',
+        },
+        repo: {
+          type: 'string',
+          description: 'Repository name or path. Omit if only one repo is indexed.',
+        },
+      },
+      required: ['span'],
+    },
+  },
 ];

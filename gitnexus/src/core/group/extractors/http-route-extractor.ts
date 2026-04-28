@@ -75,7 +75,7 @@ export function normalizeHttpPath(p: string): string {
  *   - strip protocol + host if the URL is absolute
  *   - numeric segments → `{param}` (so `/api/orders/42` → `/api/orders/{param}`)
  */
-function normalizeConsumerPath(url: string): string {
+export function normalizeConsumerPath(url: string): string {
   const templated = url.replace(/\$\{[^}]+\}/g, '{param}').trim();
   let pathOnly = templated;
   if (/^https?:\/\//i.test(templated)) {
