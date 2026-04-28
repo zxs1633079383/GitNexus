@@ -633,4 +633,55 @@ overridden.`,
       required: [],
     },
   },
+  // ─── Stage 4 · Auto Regression Forensics (P5) ───────────────────────
+  // git log ∩ blast radius. caller 传 NormalizedSpan[] (或 SpanInput[]),
+  // 输出嫌疑提交清单 + 置信度。Fix-1 强制文件路径过滤防误报。
+  {
+    name: 'regression_forensics',
+    description: `Find recent commits that likely caused the failures observed in a set of spans.
+
+Algorithm (deterministic, no LLM):
+  1. For each input span (Phase 0 NormalizedSpan or raw Jaeger/OTel span),
+     resolve handler symbolUid via Phase 0 (stacktrace / code.* / Route lookup).
+  2. For each handler, compute blast radius (api_blast_radius depth=2 cross=1).
+  3. Pull \`git log -n <lookback> --name-only\` from the repo.
+  4. Filter commits where touched files ∩ (handler-file ∪ blast radius files) ≠ ∅.
+     (Fix-1: file-path filter is mandatory — without it, unrelated same-window
+     commits are misattributed.)
+  5. Rank by confidence / log(timeAgoSec + 2). Default Top 10.
+
+OUTPUT:
+- lookback:     how many commits scanned
+- handlerCount: how many input spans had errorEvent + resolved symbolUid
+- suspectCount: total ranked suspects
+- suspects:     [{commitHash, shortHash, authorTimeSec, timeAgoSec, subject,
+                  changedFiles, matchedHandlers, confidence, hitKind}]
+                hitKind ∈ {'handler-file', 'blast-d1', 'blast-d2', 'cross-repo'}
+
+WHEN TO USE: Stage 4 of the Agentic DevOps loop — given an Issue with traceId
++ Jaeger spans, ask: which recent commits could have introduced this regression?
+Output feeds Stage 5 (test gen) + Stage 7 (auto-PR with revert proposal).`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        spans: {
+          type: 'array',
+          items: { type: 'object' },
+          description: 'Array of Jaeger/OTel spans (raw) or NormalizedSpan objects.',
+        },
+        lookback: {
+          type: 'number',
+          description: 'How many recent commits to scan (default: 50)',
+          default: 50,
+          minimum: 1,
+          maximum: 500,
+        },
+        repo: {
+          type: 'string',
+          description: 'Repository name or path. Omit if only one repo is indexed.',
+        },
+      },
+      required: ['spans'],
+    },
+  },
 ];

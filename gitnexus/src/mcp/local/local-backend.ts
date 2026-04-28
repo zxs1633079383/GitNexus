@@ -730,6 +730,8 @@ export class LocalBackend {
         return this.resolveSpanToHandler(repo, params as { span: any });
       case 'api_blast_radius':
         return this.apiBlastRadius(repo, params as Record<string, unknown>);
+      case 'regression_forensics':
+        return this.regressionForensics(repo, params as Record<string, unknown>);
       default:
         throw new Error(`Unknown tool: ${method}`);
     }
@@ -3749,6 +3751,113 @@ export class LocalBackend {
       hops: norm.hops,
       resolvedBy: 'none',
       errorEvent: norm.errorEvent,
+    };
+  }
+
+  // ─── Stage 4 · Auto Regression Forensics (P5, query-only) ──────
+  //
+  // caller POST 一组 NormalizedSpan (或 Phase 0 接受的 SpanInput[]), forensics
+  // 跑: 为每条失败 span 取 handler 的 blast radius 文件集 → 在 git log
+  // 最近 N commit 里筛交集 → confidence × 时间近度 排序。
+  //
+  // RULES §1.1 行 4 (Stage 4 必须确定性): 不调 LLM, 全靠 git log + 文件路径过滤。
+  // Fix-1: 必须文件路径过滤 (handlerFile 或 blast radius 文件命中) — 防误报。
+  // Fix-2: forensics 内部自跑 git log, 不改 detect_changes schema。
+  // Fix-9: 输入由 caller POST, 不主动拉 Jaeger。
+  private async regressionForensics(
+    repo: RepoHandle,
+    params: Record<string, unknown>,
+  ): Promise<any> {
+    await this.ensureInitialized(repo.id);
+    const { regressionForensics: runForensics } = await import(
+      '../../core/observability/regression-forensics.js'
+    );
+    const { normalizeJaegerSpan } = await import(
+      '../../core/observability/jaeger-span-normalizer.js'
+    );
+
+    const spansInput = (params.spans as any[] | undefined) ?? [];
+    const lookback = (params.lookback as number | undefined) ?? 50;
+    if (!Array.isArray(spansInput) || spansInput.length === 0) {
+      return { error: 'spans (array) is required and must contain at least one span.' };
+    }
+
+    // 统一过 Phase 0 normalize (caller 传 raw 或 NormalizedSpan 都接受)
+    const normalized: import('../../core/observability/jaeger-span-types.js').NormalizedSpan[] =
+      [];
+    for (const raw of spansInput) {
+      if (raw && typeof raw === 'object' && 'kind' in raw && 'hops' in raw) {
+        normalized.push(raw);
+      } else {
+        normalized.push(normalizeJaegerSpan(raw));
+      }
+    }
+
+    // 把 NormalizedSpan 的 stacktrace / code.* / contractId 解到 symbolUid (复用 Phase 0)
+    for (const n of normalized) {
+      if (!n.symbolUid) {
+        const outcome = await this.resolveSpanToHandler(repo, { span: n as any });
+        if (outcome.symbolUid) n.symbolUid = outcome.symbolUid;
+      }
+    }
+
+    const suspects = await runForensics({
+      spans: normalized,
+      repoPath: repo.repoPath,
+      lookback,
+      resolveHandlerFile: async (uid) => {
+        const rows = await executeParameterized(
+          repo.id,
+          `MATCH (n {id: $uid}) RETURN n.filePath AS filePath LIMIT 1`,
+          { uid },
+        );
+        if (rows.length === 0) return null;
+        return ((rows[0] as any).filePath ?? (rows[0] as any)[0]) as string;
+      },
+      resolveBlastFiles: async (uid) => {
+        // 复用 Stage 3 wrapper 的两侧 impact, 提取按 depth 分桶的文件
+        const both = await this.apiBlastRadius(repo, {
+          target_uid: uid,
+          direction: 'both',
+          depth: 2,
+          cross_depth: 1,
+        });
+        const handlerFileRows = await executeParameterized(
+          repo.id,
+          `MATCH (n {id: $uid}) RETURN n.filePath AS filePath LIMIT 1`,
+          { uid },
+        );
+        const handlerFile =
+          handlerFileRows.length > 0
+            ? (((handlerFileRows[0] as any).filePath ?? (handlerFileRows[0] as any)[0]) as string)
+            : null;
+        const depth1 = new Set<string>();
+        const depth2 = new Set<string>();
+        const cross = new Set<string>();
+        const byDepth = both?.byDepth ?? {};
+        for (const [d, items] of Object.entries(byDepth)) {
+          const target = d === '1' ? depth1 : depth2;
+          for (const it of items as any[]) {
+            const fp = it?.filePath ?? it?.file ?? null;
+            if (fp) target.add(fp);
+          }
+        }
+        // 跨仓: 受影响 modules 里的 cross-repo 标记 (best-effort, MVP)
+        for (const m of both?.affected_modules ?? []) {
+          if ((m?.repoId ?? m?.repo) && m?.repoId !== repo.id && m?.repo !== repo.id) {
+            const fp = m?.filePath ?? m?.file;
+            if (fp) cross.add(fp);
+          }
+        }
+        return { handlerFile, depth1, depth2, cross };
+      },
+    });
+
+    return {
+      lookback,
+      handlerCount: normalized.filter((n) => n.errorEvent).length,
+      suspectCount: suspects.length,
+      suspects: suspects.slice(0, 10), // 默认返回 Top 10
     };
   }
 
