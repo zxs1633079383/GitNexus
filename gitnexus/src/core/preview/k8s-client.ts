@@ -4,11 +4,11 @@
 // gitnexus-preview- 开头。这一行代码是用户生产 namespace 的最后防线。
 
 import { spawn } from 'node:child_process';
+import { collectTestResult, type EnrichedTestResult } from './result-collector.js';
 import {
   EXPIRES_ANNOTATION,
   MANAGED_LABEL,
   NS_PREFIX,
-  type TestResult,
 } from './types.js';
 
 // ─── kubectl 调用 wrapper ──────────────────────────────────────────────
@@ -232,8 +232,8 @@ export interface RunTestJobOpts {
   timeoutSec?: number;
 }
 
-/** Apply Job + 等完成 + 收 logs；返回 TestResult。 */
-export async function runTestJob(opts: RunTestJobOpts): Promise<TestResult> {
+/** Apply Job + 等完成 + 收 logs；走 result-collector 归一为 EnrichedTestResult。 */
+export async function runTestJob(opts: RunTestJobOpts): Promise<EnrichedTestResult> {
   assertNsAllowed(opts.ns);
   const timeout = opts.timeoutSec ?? 300;
 
@@ -292,15 +292,9 @@ spec:
     'jsonpath={.items[0].status.containerStatuses[0].state.terminated.exitCode}',
   ]);
   const exitCode = Number(podsRes.stdout.trim() || -1);
+  // 标记 wait 结果用于诊断
+  void waitRes;
 
-  // R-15 统一 JUnit XML：当前最小实现 — 通过 exitCode 判定 1 个 case
-  // 完整 JUnit XML 解析放 result-collector 模块（S6.3 后续迭代）
-  const stdoutTail = logsRes.stdout.slice(-2048);
-  return {
-    passed: exitCode === 0 ? 1 : 0,
-    failed: exitCode === 0 ? 0 : 1,
-    skipped: 0,
-    exitCode,
-    stdoutTail,
-  };
+  // R-15: 优先 JUnit XML，没有则退到 exitCode
+  return collectTestResult({ stdout: logsRes.stdout, exitCode });
 }

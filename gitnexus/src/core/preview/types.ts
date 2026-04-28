@@ -91,3 +91,10 @@ export interface PreviewDriver {
   teardown(ns: string): Promise<void>;
   reapExpired(): Promise<string[]>;
 }
+
+// R-16 占位：docker-compose adapter（无 K8s 团队 fallback）。当前仅声明接口，
+// 不实现 — 让 import 路径在未来"补一份 docker-compose driver"时不需要破坏现有 API。
+export interface DockerComposeAdapterPlaceholder {
+  // 保留 hook 位；S6 当前阶段 K8s 路径已覆盖用户场景。
+  readonly _placeholder: true;
+}

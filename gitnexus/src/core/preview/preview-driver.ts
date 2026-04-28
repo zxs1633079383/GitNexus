@@ -10,7 +10,8 @@ import {
   listExpiredManagedNamespaces,
   runTestJob,
 } from './k8s-client.js';
-import type { PreviewDriver, PreviewJob, TestResult } from './types.js';
+import type { EnrichedTestResult } from './result-collector.js';
+import type { PreviewDriver, PreviewJob } from './types.js';
 
 export class K8sPreviewDriver implements PreviewDriver {
   async spinUp(job: PreviewJob): Promise<void> {
@@ -25,7 +26,7 @@ export class K8sPreviewDriver implements PreviewDriver {
     });
   }
 
-  async runTests(job: PreviewJob): Promise<TestResult> {
+  async runTests(job: PreviewJob): Promise<EnrichedTestResult> {
     return runTestJob({
       ns: job.ns,
       jobName: `${job.spec.serviceName}-tests`,
