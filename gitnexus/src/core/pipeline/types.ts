@@ -183,4 +183,31 @@ export interface OrchestratorDeps {
     dryRun?: boolean;
     stage6Pass?: boolean;
   }) => Promise<AutoPRResult>;
+
+  // ─── 可选: LIVE patch + 真断言生成 (R-14, claude-cli 实现) ────────────
+  /**
+   * 给一个 handler + 错误上下文 + blast radius (+ 可选嫌疑 commit), 让 LLM 出真补丁 + 真测试.
+   *
+   * 不存在时, orchestrator 走旧 R-1 scaffold + 诊断报告路径 (现 mvp/v1.2 行为, 不破).
+   * 存在并 ok=true 时, 返回的 fixFiles + testFiles 会被 R-14 policy 过一遍后塞进 PRCandidate.files.
+   *
+   * 必须由 caller 自己保证 R-14 安全约束已注入 system prompt.
+   */
+  genFix?: (params: {
+    handlerSymbolUid: string;
+    handlerFilePath: string;
+    errorContext: string;
+    blastRadiusFiles: string[];
+    suspectCommit?: { hash: string; subject?: string; diff?: string };
+    issueRef?: string;
+  }) => Promise<{
+    ok: boolean;
+    fixFiles: Array<{ path: string; content: string }>;
+    testFiles: Array<{ path: string; content: string }>;
+    reasoning: string;
+    abort?: boolean;
+    reason?: string;
+    costUsd?: number;
+    durationMs?: number;
+  }>;
 }

@@ -100,6 +100,8 @@ function buildPRBody(args: {
   s5_files: string[];
   s6: StageResult<S6Output>;
   issueRef?: string;
+  genFixDiagnostic?: string;
+  genFixReasoning?: string;
 }): string {
   const lines: string[] = [];
   if (args.header) lines.push(args.header, '');
@@ -111,6 +113,16 @@ function buildPRBody(args: {
   lines.push(`- 输入 span 数: \`${args.inputSpanCount}\``);
   lines.push(`- 解析到 handler 数: \`${args.resolvedHandlerUids.length}\``);
   lines.push('');
+  if (args.genFixReasoning) {
+    lines.push('### 🤖 LLM patch reasoning (R-14)');
+    lines.push(args.genFixReasoning.slice(0, 1500));
+    lines.push('');
+    if (args.genFixDiagnostic) lines.push(`> ${args.genFixDiagnostic}`);
+    lines.push('');
+  } else if (args.genFixDiagnostic) {
+    lines.push(`> ${args.genFixDiagnostic}`);
+    lines.push('');
+  }
   lines.push('### S4 嫌疑提交');
   lines.push('```json');
   lines.push(JSON.stringify(args.s4_forensics.output ?? args.s4_forensics.reason ?? null, null, 2).slice(0, 1500));
@@ -129,6 +141,53 @@ function buildPRBody(args: {
     lines.push(`- ns: \`${args.s6.output.ns}\``);
   }
   if (args.s6.reason) lines.push(`- reason: ${args.s6.reason}`);
+  return lines.join('\n');
+}
+
+/**
+ * 把 SpanInput 里的 errorEvent (logs[].fields with exception.* / events[] OTel) 拼成
+ * 给 LLM 的 errorContext 文本.
+ */
+function stringifySpanError(span: unknown): string {
+  if (!span || typeof span !== 'object') return '(no span)';
+  const sp = span as {
+    operationName?: string;
+    logs?: Array<{ fields?: Array<{ key?: string; value?: unknown }> }>;
+    events?: Array<{ name?: string; attributes?: Record<string, unknown> }>;
+    process?: { serviceName?: string };
+    tags?: Array<{ key?: string; value?: unknown }>;
+  };
+  const lines: string[] = [];
+  if (sp.process?.serviceName) lines.push(`service: ${sp.process.serviceName}`);
+  if (sp.operationName) lines.push(`op: ${sp.operationName}`);
+  if (Array.isArray(sp.tags)) {
+    for (const t of sp.tags) {
+      if (typeof t.key === 'string' && /^http\.(method|route|url|status_code)/.test(t.key)) {
+        lines.push(`${t.key}: ${String(t.value).slice(0, 200)}`);
+      }
+    }
+  }
+  const exFields: Record<string, string> = {};
+  for (const log of sp.logs ?? []) {
+    for (const f of log.fields ?? []) {
+      if (typeof f.key === 'string' && typeof f.value === 'string') {
+        if (f.key.startsWith('exception.')) exFields[f.key] = f.value;
+      }
+    }
+  }
+  for (const ev of sp.events ?? []) {
+    if (ev.name === 'exception' && ev.attributes) {
+      for (const [k, v] of Object.entries(ev.attributes)) {
+        if (k.startsWith('exception.') && typeof v === 'string') exFields[k] = v;
+      }
+    }
+  }
+  if (exFields['exception.type']) lines.push(`exception type: ${exFields['exception.type']}`);
+  if (exFields['exception.message']) lines.push(`exception message: ${exFields['exception.message']}`);
+  if (exFields['exception.stacktrace']) {
+    lines.push('stacktrace:');
+    lines.push(exFields['exception.stacktrace'].slice(0, 2000));
+  }
   return lines.join('\n');
 }
 
@@ -250,6 +309,55 @@ export async function runPipeline(
     });
   }
 
+  // ── 可选 LLM patch 生成 (R-14, deps.genFix 提供时启用) ────────────────
+  // 不暴露成正式 stage (避免改 PipelineReport schema), 用本地变量传递给 S7.
+  // 失败 / abort / 未实现 → 沿用 S5 scaffold + 诊断报告路径 (mvp/v1.2 行为).
+  let genFixResult:
+    | { fixFiles: Array<{ path: string; content: string }>; testFiles: Array<{ path: string; content: string }>; reasoning: string }
+    | null = null;
+  let genFixDiagnostic = '';
+  if (deps.genFix && resolvedHandlerUids.length > 0 && input.spans.length > 0) {
+    try {
+      const firstUid = resolvedHandlerUids[0];
+      const s2Match = s2_resolve.find(
+        (r) => r.status === 'ok' && extractHandlerUid(r.output) === firstUid,
+      );
+      const handlerFile = s2Match ? extractHandlerFile(s2Match.output) : null;
+      const s3Match = s3_blast.find((r) => r.status === 'ok' && r.output);
+      const blastFiles = ((s3Match?.output as { files?: string[] } | undefined)?.files ?? []).filter(
+        (f): f is string => typeof f === 'string',
+      );
+      const errorContext = stringifySpanError(input.spans[0]);
+      if (handlerFile) {
+        const t0 = now();
+        const fix = await deps.genFix({
+          handlerSymbolUid: firstUid,
+          handlerFilePath: handlerFile,
+          errorContext,
+          blastRadiusFiles: blastFiles.slice(0, 30),
+          issueRef: input.prTarget?.issueRef,
+        });
+        const dur = now() - t0;
+        if (fix.ok && (fix.fixFiles.length > 0 || fix.testFiles.length > 0)) {
+          genFixResult = {
+            fixFiles: fix.fixFiles,
+            testFiles: fix.testFiles,
+            reasoning: fix.reasoning,
+          };
+          genFixDiagnostic = `LLM patch ok in ${dur}ms cost=$${(fix.costUsd ?? 0).toFixed(4)} fix=${fix.fixFiles.length} tests=${fix.testFiles.length}`;
+        } else {
+          genFixDiagnostic = `LLM patch abort: ${fix.reason ?? '(no reason)'} (cost=$${(fix.costUsd ?? 0).toFixed(4)}, ${dur}ms)`;
+        }
+      } else {
+        genFixDiagnostic = 'LLM patch skipped: handler filePath not extractable from S2';
+      }
+    } catch (e) {
+      genFixDiagnostic = `LLM patch threw: ${(e as Error).message}`;
+    }
+  } else if (deps.genFix) {
+    genFixDiagnostic = 'LLM patch skipped: no resolved handler / no spans';
+  }
+
   // ── S7 · auto_pr (默认 dryRun) ────────────────────────────────────────
   let s7_autopr: StageResult<S7Output>;
   if (!input.prTarget) {
@@ -268,6 +376,8 @@ export async function runPipeline(
         s5_files: s5Files,
         s6: s6_preview,
         issueRef: input.prTarget!.issueRef,
+        genFixDiagnostic,
+        genFixReasoning: genFixResult?.reasoning,
       });
 
       // 让 MR/PR 真带 commit + diff —— 写一份 7 阶段诊断报告 + S5 测试脚手架 stub
@@ -284,18 +394,30 @@ export async function runPipeline(
             s4_forensics,
             s5_testgen,
             s6_preview,
+            genFixDiagnostic,
+            genFixReasoning: genFixResult?.reasoning,
           }),
           op: 'create',
         },
       ];
 
-      // S5 测试脚手架 stub — 让 PR diff 能看到生成的测试占位文件 (R-1 scaffold)
-      for (const path of s5Files.slice(0, 5)) {
-        candidateFiles.push({
-          path,
-          content: buildTestScaffoldStub(path, issueRef, input.prTarget!.bodyHeader ?? ''),
-          op: 'create',
-        });
+      // 优先用 LLM 真补丁 + 真断言测试 (R-14); 没有就走 S5 scaffold (R-1)
+      // fixFiles 是改既有文件 → op=update; testFiles 一般是新建 → op=create
+      if (genFixResult) {
+        for (const f of genFixResult.fixFiles) {
+          candidateFiles.push({ path: f.path, content: f.content, op: 'update' });
+        }
+        for (const f of genFixResult.testFiles) {
+          candidateFiles.push({ path: f.path, content: f.content, op: 'create' });
+        }
+      } else {
+        for (const path of s5Files.slice(0, 5)) {
+          candidateFiles.push({
+            path,
+            content: buildTestScaffoldStub(path, issueRef, input.prTarget!.bodyHeader ?? ''),
+            op: 'create',
+          });
+        }
       }
 
       const candidate: PRCandidate = {
@@ -360,6 +482,8 @@ function buildAutoPRReportFile(args: {
   s4_forensics: StageResult<S4Output>;
   s5_testgen: StageResult<S5Output>[];
   s6_preview: StageResult<S6Output>;
+  genFixDiagnostic?: string;
+  genFixReasoning?: string;
 }): string {
   const L: string[] = [];
   L.push(`# Auto-PR 诊断报告 — ${args.issueRef || '(no issue ref)'}`);
@@ -369,6 +493,15 @@ function buildAutoPRReportFile(args: {
   L.push(`> 输入 spans: ${args.inputSpanCount}`);
   L.push(`> 解析 handlers: ${args.resolvedHandlerUids.length}`);
   L.push('');
+  if (args.genFixReasoning || args.genFixDiagnostic) {
+    L.push('## 🤖 LLM patch reasoning (R-14)');
+    if (args.genFixReasoning) L.push(args.genFixReasoning);
+    if (args.genFixDiagnostic) {
+      L.push('');
+      L.push(`> ${args.genFixDiagnostic}`);
+    }
+    L.push('');
+  }
 
   L.push('## S2 · Trace2Code Resolver');
   for (const r of args.s2_resolve.slice(0, 30)) {

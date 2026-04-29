@@ -25,6 +25,10 @@
 //   GITNEXUS_BRIDGE_REPO      默认 cses-java (eval-server 里的 repo alias)
 //   GITNEXUS_BRIDGE_REPO_MAP  可选 JSON {"owner/repo": "<eval-server alias>"}
 //                             — 让多个 GitLab repo 走对应索引
+//   GITNEXUS_REPO_PATH_MAP    可选 JSON {"owner/repo": "<本地 clone 路径>"}
+//                             — 启用 LLM patch 时必需; claude cwd 在这, 出真改代码补丁
+//   GITNEXUS_LLM_BUDGET_USD   单次 LLM 调用预算 (默认 1.0)
+//   CLAUDE_BIN                claude CLI 路径 (默认 PATH 找 'claude')
 
 import express from 'express';
 import { mountWebhookRoutes } from '../src/server/webhook/handler.js';
@@ -44,6 +48,7 @@ import {
   blastRadius,
   parseMethodId,
 } from './mcp-bridge.js';
+import { runPatch, violatesSafetyPolicy } from './patch-runner.js';
 import type { OrchestratorDeps } from '../src/core/pipeline/types.js';
 
 const SECRET = process.env.GITNEXUS_GITLAB_SECRET ?? '';
@@ -68,6 +73,12 @@ function parseJsonEnv<T = Record<string, string>>(raw: string, name: string): T 
 const TOKEN_MAP = parseJsonEnv<Record<string, string>>(TOKEN_MAP_RAW, 'GITNEXUS_AUTOPR_TOKEN_MAP');
 const BRIDGE_REPO_MAP =
   parseJsonEnv<Record<string, string>>(BRIDGE_REPO_MAP_RAW, 'GITNEXUS_BRIDGE_REPO_MAP') ?? {};
+const REPO_PATH_MAP =
+  parseJsonEnv<Record<string, string>>(
+    process.env.GITNEXUS_REPO_PATH_MAP ?? '',
+    'GITNEXUS_REPO_PATH_MAP',
+  ) ?? {};
+const LLM_BUDGET_USD = Number(process.env.GITNEXUS_LLM_BUDGET_USD ?? '1.0');
 
 function pickToken(fullName: string): string {
   if (TOKEN_MAP) {
@@ -285,6 +296,64 @@ function buildDeps(fullName: string): OrchestratorDeps {
         dryRun: !!p.dryRun,
         stage6Pass: !!p.stage6Pass,
       }),
+
+    // ── 可选: 真 LLM 补丁 + 真断言 (R-14, claude-cli 实现) ──
+    // 触发条件: 该 repo 在 REPO_PATH_MAP 里有本地 clone 路径
+    genFix: REPO_PATH_MAP[fullName]
+      ? async (p) => {
+          const t0 = Date.now();
+          const repoPath = REPO_PATH_MAP[fullName];
+          console.log(
+            `  → genFix start: repoPath=${repoPath} handler=${p.handlerFilePath} blast=${p.blastRadiusFiles.length}`,
+          );
+          try {
+            const r = await runPatch({
+              repoPath,
+              handlerFilePath: p.handlerFilePath,
+              handlerSymbolUid: p.handlerSymbolUid,
+              errorContext: p.errorContext,
+              blastRadiusFiles: p.blastRadiusFiles,
+              suspectCommit: p.suspectCommit,
+              issueRef: p.issueRef,
+              maxBudgetUsd: LLM_BUDGET_USD,
+              onProgress: (line) => console.log(`     ${line}`),
+            });
+            // R-14 路径白名单: 任何违反 → 整体 abort, 不让"半个安全的 patch"过
+            for (const f of [...r.fixFiles, ...r.testFiles]) {
+              const v = violatesSafetyPolicy(f.path);
+              if (v) {
+                console.error(`  ✗ genFix 拒绝: ${f.path} 违反 ${v}`);
+                return {
+                  ok: false,
+                  fixFiles: [],
+                  testFiles: [],
+                  reasoning: r.reasoning,
+                  abort: true,
+                  reason: `policy violation: ${v} on ${f.path}`,
+                  costUsd: r.costUsd,
+                  durationMs: r.durationMs,
+                };
+              }
+            }
+            console.log(
+              `  ← genFix done: ok=${r.ok} fix=${r.fixFiles.length} tests=${r.testFiles.length} cost=$${r.costUsd.toFixed(4)} dur=${Date.now() - t0}ms`,
+            );
+            return r;
+          } catch (e) {
+            console.error(`  ✗ genFix threw: ${(e as Error).message}`);
+            return {
+              ok: false,
+              fixFiles: [],
+              testFiles: [],
+              reasoning: '',
+              abort: true,
+              reason: `genFix exception: ${(e as Error).message}`,
+              costUsd: 0,
+              durationMs: Date.now() - t0,
+            };
+          }
+        }
+      : undefined,
   };
 }
 
@@ -384,6 +453,9 @@ const httpServer = app.listen(PORT, '0.0.0.0', async () => {
   if (Object.keys(BRIDGE_REPO_MAP).length > 0) {
     console.log(`  repoMap      ${JSON.stringify(BRIDGE_REPO_MAP)}`);
   }
+  console.log(
+    `  llmPatch     ${Object.keys(REPO_PATH_MAP).length > 0 ? `✅ ${Object.keys(REPO_PATH_MAP).length} repo (claude -p budget=$${LLM_BUDGET_USD})` : '⚪ disabled (no GITNEXUS_REPO_PATH_MAP)'}`,
+  );
   console.log(
     '═══════════════════════════════════════════════════════════',
   );
