@@ -1,20 +1,35 @@
 // MVP MCP 桥接 (mvp/v1.2.0-bridge, 方案 A.2)
 //
 // 把本仓 (lbug) 的 webhook server 跟全局 gitnexus 1.4.1 (KuzuDB) 索引数据打通。
-// 全局 binary 提供 eval-server (HTTP) — 本桥接发 cypher 查 → 拿真业务文件路径。
+//
+// 双路径:
+//   · 主路径 — `gitnexus impact <name> -r <repo>` CLI 子进程, 拿到 GitNexus
+//     真算法的 JSON: 四轴风险评级 + processes_affected + modules_affected + byDepth.
+//   · 兜底  — eval-server `/tool/cypher` HTTP, 自走 caller 链.
+//     当 CLI 对 ambiguous name 返 impactedCount=0 时启用 (cypher 走遍所有重名).
+//
+// resolveHandler 仍走 cypher (name+file/class 三层 fallback) — CLI 没暴露
+// "name + file disambiguation" 的反查接口.
 //
 // 关键发现 (2026-04-29 写时验证):
-//   · /tool/cypher 稳定可用, 返回 markdown 表格
-//   · /tool/impact 在 1.4.1 有 crash bug — 不要碰
-//   · cses-java 1.4.1 schema 没有 Route 节点表; 只有 Method + 单一 CodeRelation
+//   · gitnexus impact CLI 返 JSON, 不接 Method:id 全限定输入 (只接 name)
+//   · ambiguous name (如 loadSnapshot 命中 2 个 Method) → CLI 返 impactedCount=0
+//   · /tool/impact HTTP 包装在 1.4.1 对部分输入 (如 loadSnapshot) 直接 crash server
+//   · /tool/cypher HTTP 稳定; 响应是 `<JSON>\n---\nNext: hint` 拼接体
+//   · cses-java 1.4.1 schema: 仅 Method/Class/File/Folder/... 等 11 种节点 +
+//     单一 CodeRelation 关系; 无 Route, 无 :HANDLES_ROUTE
 //   · Method.id 真实格式: "Method:<filePath>:<name>:<startLine>"
 //
 // 长期方案: 见 docs/backlog/gitnexus-version-sync.md §3.2 (切 KuzuDB)
 //
 // query-only — must not be called from any pipeline phase
 
+import { spawn } from 'node:child_process';
+
 const BASE = process.env.GITNEXUS_EVAL_BASE ?? 'http://localhost:4848';
 const TIMEOUT_MS = Number(process.env.GITNEXUS_EVAL_TIMEOUT_MS ?? 8000);
+const GITNEXUS_BIN = process.env.GITNEXUS_BIN ?? 'gitnexus';
+const IMPACT_TIMEOUT_MS = Number(process.env.GITNEXUS_IMPACT_TIMEOUT_MS ?? 30000);
 
 export interface CypherResponse {
   rows: Record<string, string>[];
@@ -172,14 +187,104 @@ export interface BlastResult {
   total: number;
   depth: number;
   truncated: boolean;
+  /** 走的策略: gitnexus-impact-cli (主) / cypher-fallback (兜底) */
+  strategy: 'gitnexus-impact-cli' | 'cypher-fallback' | 'none';
+  /** GitNexus CLI 才有 — 真四轴风险评级 (LOW/MEDIUM/HIGH/CRITICAL) */
+  risk?: string;
+  /** GitNexus CLI 才有 — Process / Module 影响数 */
+  processesAffected?: number;
+  modulesAffected?: number;
+  /** GitNexus CLI 才有 — 受影响 process / module 路径 */
+  affectedProcesses?: Array<{ name?: string; path?: string }>;
+  affectedModules?: Array<{ name?: string; path?: string }>;
+  /** GitNexus CLI 才有 — 按 depth 分组的命中详情 */
+  byDepth?: Record<string, unknown>;
+  /** Method.id from CLI target.id (正式 GitNexus UID) */
+  resolvedTargetId?: string;
+}
+
+interface GitnexusImpactJson {
+  target?: { id: string; name: string; filePath: string };
+  direction?: string;
+  impactedCount?: number;
+  risk?: string;
+  summary?: { direct?: number; processes_affected?: number; modules_affected?: number };
+  affected_processes?: Array<{ name?: string; path?: string }>;
+  affected_modules?: Array<{ name?: string; path?: string }>;
+  byDepth?: Record<string, unknown>;
+  error?: string;
 }
 
 /**
- * 用 cypher 走 caller 链算 upstream blast radius (避开 /tool/impact crash bug).
+ * 调 `gitnexus impact <name> -r <repo>` CLI, 拿真算法 JSON.
  *
- * direction: upstream (谁调我), downstream (我调谁), both
- * depth: 跳数 (默认 2)
- * limit: 限制 (默认 100)
+ * 不接 Method:id 全限定 (CLI 设计如此); 给 method name 即可.
+ * Ambiguous name → 返 impactedCount=0, caller 走 cypher fallback.
+ * 进程超时 30s 默认 (env GITNEXUS_IMPACT_TIMEOUT_MS 可调).
+ */
+export async function gitnexusImpactCLI(opts: {
+  target: string;
+  repo: string;
+  direction?: 'upstream' | 'downstream';
+  depth?: number;
+  includeTests?: boolean;
+}): Promise<GitnexusImpactJson | null> {
+  const args = ['impact', opts.target, '-r', opts.repo];
+  if (opts.direction) args.push('-d', opts.direction);
+  if (opts.depth !== undefined) args.push('--depth', String(opts.depth));
+  if (opts.includeTests) args.push('--include-tests');
+
+  return new Promise((resolveOuter) => {
+    const child = spawn(GITNEXUS_BIN, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const settle = (v: GitnexusImpactJson | null) => {
+      if (settled) return;
+      settled = true;
+      resolveOuter(v);
+    };
+    child.stdout?.on('data', (b: Buffer) => {
+      stdout += b.toString('utf-8');
+    });
+    child.stderr?.on('data', (b: Buffer) => {
+      stderr += b.toString('utf-8');
+    });
+    child.on('close', () => {
+      const trimmed = stdout.trim();
+      if (!trimmed) return settle(null);
+      try {
+        const parsed = JSON.parse(trimmed) as GitnexusImpactJson;
+        settle(parsed);
+      } catch {
+        settle(null);
+      }
+    });
+    child.on('error', () => settle(null));
+    setTimeout(() => {
+      if (!settled) {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          /* ignore */
+        }
+        settle(null);
+      }
+    }, IMPACT_TIMEOUT_MS).unref?.();
+    // hint stderr for diagnosability without polluting stdout
+    void stderr;
+  });
+}
+
+/**
+ * 算 upstream/downstream blast radius — 双路径:
+ *
+ *   1. 主: gitnexus impact CLI (真算法 + 风险评级 + processes/modules)
+ *      - impactedCount > 0: 直接用结果
+ *      - impactedCount = 0 / null / parse 失败: 进入 fallback
+ *   2. 兜底: eval-server cypher walk (走遍所有重名 method, 找全 caller)
+ *
+ * direction: upstream / downstream / both (cypher fallback 才支持 both)
  */
 export async function blastRadius(
   opts: {
@@ -191,9 +296,45 @@ export async function blastRadius(
   },
   fetchImpl: typeof fetch = fetch,
 ): Promise<BlastResult> {
-  const name = escLiteral(opts.name);
   const depth = Math.max(1, Math.min(opts.depth ?? 2, 4));
   const limit = Math.max(1, Math.min(opts.limit ?? 100, 500));
+  const cliDir = opts.direction === 'both' ? 'upstream' : (opts.direction ?? 'upstream');
+
+  // ─── 主路径: gitnexus impact CLI ────────────────────────────────────
+  const cli = await gitnexusImpactCLI({
+    target: opts.name,
+    repo: opts.repo,
+    direction: cliDir,
+    depth,
+  });
+  if (cli && !cli.error && (cli.impactedCount ?? 0) > 0) {
+    const procFiles = (cli.affected_processes ?? [])
+      .map((p) => p.path)
+      .filter((x): x is string => !!x);
+    const modFiles = (cli.affected_modules ?? [])
+      .map((m) => m.path)
+      .filter((x): x is string => !!x);
+    const files = Array.from(new Set([...procFiles, ...modFiles]));
+    return {
+      target: opts.name,
+      callers: [],
+      files,
+      total: cli.impactedCount ?? files.length,
+      depth,
+      truncated: false,
+      strategy: 'gitnexus-impact-cli',
+      risk: cli.risk,
+      processesAffected: cli.summary?.processes_affected,
+      modulesAffected: cli.summary?.modules_affected,
+      affectedProcesses: cli.affected_processes,
+      affectedModules: cli.affected_modules,
+      byDepth: cli.byDepth,
+      resolvedTargetId: cli.target?.id,
+    };
+  }
+
+  // ─── 兜底: cypher walk (handles ambiguous names) ────────────────────
+  const name = escLiteral(opts.name);
   const dir = opts.direction ?? 'upstream';
   const arrow =
     dir === 'upstream' ? `<-[*1..${depth}]-` : dir === 'downstream' ? `-[*1..${depth}]->` : `-[*1..${depth}]-`;
@@ -213,6 +354,8 @@ export async function blastRadius(
     total: callers.length,
     depth,
     truncated: callers.length === limit,
+    strategy: callers.length > 0 ? 'cypher-fallback' : 'none',
+    resolvedTargetId: cli?.target?.id,
   };
 }
 

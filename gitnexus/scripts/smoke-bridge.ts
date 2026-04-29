@@ -71,12 +71,30 @@ async function main() {
     },
     fetch,
   );
-  console.log(`\n[Stage 3 真 blast radius]`);
+  console.log(`\n[Stage 3 真 blast radius — ${b.strategy}]`);
   console.log(`  target    = ${b.target}`);
-  console.log(`  total     = ${b.total} callers (depth=${b.depth}${b.truncated ? ', truncated' : ''})`);
+  console.log(`  total     = ${b.total} (depth=${b.depth}${b.truncated ? ', truncated' : ''})`);
+  if (b.risk) console.log(`  risk      = ${b.risk} (GitNexus 真四轴评级)`);
+  if (b.processesAffected !== undefined) {
+    console.log(`  processes = ${b.processesAffected} affected`);
+  }
+  if (b.modulesAffected !== undefined) {
+    console.log(`  modules   = ${b.modulesAffected} affected`);
+  }
   console.log(`  files     = ${b.files.length} 个真业务文件:`);
   for (const f of b.files.slice(0, 10)) console.log(`    · ${f}`);
   if (b.files.length > 10) console.log(`    · … 还有 ${b.files.length - 10}`);
+
+  // ─── 单独跑一个 CLI 主路径用例 (createVote — unique 不 ambiguous) ───
+  console.log(`\n[Stage 3 unique name 验证 — createVote 走 CLI]`);
+  const b2 = await blastRadius(
+    { name: 'createVote', repo: REPO, direction: 'upstream', depth: 2, limit: 30 },
+    fetch,
+  );
+  console.log(`  strategy  = ${b2.strategy} (期望 gitnexus-impact-cli 或 none — createVote 是入口 controller, 0 caller)`);
+  console.log(`  risk      = ${b2.risk ?? '(none)'}`);
+  console.log(`  total     = ${b2.total}`);
+  if (b2.resolvedTargetId) console.log(`  resolvedTargetId = ${b2.resolvedTargetId}`);
 
   // ─── DOD 校验 ─────────────────────────────────────────
   const isMock =
@@ -90,7 +108,7 @@ async function main() {
     console.error('\n✗ resolveHandler 的 filePath 与 fixture #1 期望不一致');
     process.exit(5);
   }
-  console.log('\n✅ smoke pass — bridge 反查到真 filePath, S3 拿到真 caller 文件列表');
+  console.log('\n✅ smoke pass — bridge 反查到真 filePath, S3 用真算法/cypher 拿到真 caller');
 }
 
 main().catch((e) => {

@@ -206,7 +206,11 @@ describe('resolveHandler', () => {
 });
 
 describe('blastRadius', () => {
-  it('upstream cypher 走 <- 箭头, 收 distinct callers', async () => {
+  // 这些 case 测 cypher fallback 路径 — CLI 不存在时 (本机测试无 gitnexus binary 在 PATH 假设).
+  // 跑 vitest 时 GITNEXUS_BIN 设为不存在的命令 → impact CLI spawn 失败 → 自动落到 cypher fallback.
+  // 见 vitest.bridge.config.ts setEnv.
+
+  it('CLI 不可用 → cypher fallback, upstream 走 <- 箭头', async () => {
     const { fetch: f, calls } = mkFetch([
       {
         body: {
@@ -219,6 +223,7 @@ describe('blastRadius', () => {
       { name: 'loadSnapshot', repo: 'cses-java', direction: 'upstream', depth: 2 },
       f,
     );
+    expect(r.strategy).toBe('cypher-fallback');
     expect((calls[0].body as any).query).toContain('<-[*1..2]-');
     expect(r.callers.length).toBe(3);
     expect(r.files.sort()).toEqual(['x/H.java', 'y/R.java']);
@@ -253,6 +258,13 @@ describe('blastRadius', () => {
     expect((calls[0].body as any).query).toContain('*1..1]');
     await blastRadius({ name: 'a', repo: 'r', depth: 99 }, f);
     expect((calls[1].body as any).query).toContain('*1..4]');
+  });
+
+  it('cypher 也空 → strategy=none', async () => {
+    const { fetch: f } = mkFetch([{ body: { markdown: '' } }]);
+    const r = await blastRadius({ name: 'isolated', repo: 'r' }, f);
+    expect(r.strategy).toBe('none');
+    expect(r.total).toBe(0);
   });
 });
 
