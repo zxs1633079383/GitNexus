@@ -13,7 +13,9 @@
 //
 // env:
 //   GITNEXUS_GITLAB_SECRET    必需 - webhook 验签
-//   GITNEXUS_AUTOPR_TOKEN     必需 - GitLab PAT
+//   GITNEXUS_AUTOPR_TOKEN     单 repo 时必需 - GitLab PAT
+//   GITNEXUS_AUTOPR_TOKEN_MAP 多 repo 时必需 - JSON {"owner/repo": "<pat>", ...}
+//                             (优先级高于 GITNEXUS_AUTOPR_TOKEN)
 //   GITLAB_API_BASE           默认 http://git.yundiz.com/api/v4
 //   JAEGER_QUERY_BASE         默认 http://192.168.6.66:32281
 //   GITNEXUS_AUTOPR_LIVE      默认 0 (dryRun); =1 真发 MR
@@ -21,6 +23,8 @@
 //   PORT                      默认 3034
 //   GITNEXUS_EVAL_BASE        默认 http://localhost:4848 (bridge 目标)
 //   GITNEXUS_BRIDGE_REPO      默认 cses-java (eval-server 里的 repo alias)
+//   GITNEXUS_BRIDGE_REPO_MAP  可选 JSON {"owner/repo": "<eval-server alias>"}
+//                             — 让多个 GitLab repo 走对应索引
 
 import express from 'express';
 import { mountWebhookRoutes } from '../src/server/webhook/handler.js';
@@ -43,22 +47,62 @@ import {
 import type { OrchestratorDeps } from '../src/core/pipeline/types.js';
 
 const SECRET = process.env.GITNEXUS_GITLAB_SECRET ?? '';
-const TOKEN = process.env.GITNEXUS_AUTOPR_TOKEN ?? '';
+const SINGLE_TOKEN = process.env.GITNEXUS_AUTOPR_TOKEN ?? '';
+const TOKEN_MAP_RAW = process.env.GITNEXUS_AUTOPR_TOKEN_MAP ?? '';
 const API_BASE = process.env.GITLAB_API_BASE ?? 'http://git.yundiz.com/api/v4';
 const PORT = Number(process.env.PORT ?? 3034);
 const PROVIDER_KIND = process.env.GITNEXUS_PROVIDER ?? 'gitlab';
-const BRIDGE_REPO = process.env.GITNEXUS_BRIDGE_REPO ?? 'cses-java';
+const BRIDGE_REPO_DEFAULT = process.env.GITNEXUS_BRIDGE_REPO ?? 'cses-java';
+const BRIDGE_REPO_MAP_RAW = process.env.GITNEXUS_BRIDGE_REPO_MAP ?? '';
+
+function parseJsonEnv<T = Record<string, string>>(raw: string, name: string): T | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch (e) {
+    console.error(`FATAL: ${name} 不是合法 JSON: ${(e as Error).message}`);
+    process.exit(1);
+  }
+}
+
+const TOKEN_MAP = parseJsonEnv<Record<string, string>>(TOKEN_MAP_RAW, 'GITNEXUS_AUTOPR_TOKEN_MAP');
+const BRIDGE_REPO_MAP =
+  parseJsonEnv<Record<string, string>>(BRIDGE_REPO_MAP_RAW, 'GITNEXUS_BRIDGE_REPO_MAP') ?? {};
+
+function pickToken(fullName: string): string {
+  if (TOKEN_MAP) {
+    const t = TOKEN_MAP[fullName];
+    if (t) return t;
+    if (SINGLE_TOKEN) return SINGLE_TOKEN;
+    throw new Error(`No token configured for repo "${fullName}" (TOKEN_MAP 未命中且无 fallback TOKEN)`);
+  }
+  if (!SINGLE_TOKEN) throw new Error('GITNEXUS_AUTOPR_TOKEN / TOKEN_MAP 都未设置');
+  return SINGLE_TOKEN;
+}
+
+function pickBridgeRepo(fullName: string): string {
+  return BRIDGE_REPO_MAP[fullName] ?? BRIDGE_REPO_DEFAULT;
+}
 
 if (!SECRET) {
   console.error('FATAL: GITNEXUS_GITLAB_SECRET env required');
   process.exit(1);
 }
-if (!TOKEN) {
-  console.error('FATAL: GITNEXUS_AUTOPR_TOKEN env required');
+if (!SINGLE_TOKEN && !TOKEN_MAP) {
+  console.error('FATAL: GITNEXUS_AUTOPR_TOKEN 或 GITNEXUS_AUTOPR_TOKEN_MAP 至少要设一个');
   process.exit(1);
 }
 
-const provider = new GitLabPRProvider({ token: TOKEN, apiBase: API_BASE });
+// providerCache: 避免给同一 repo 反复 new GitLabPRProvider
+const providerCache = new Map<string, GitLabPRProvider>();
+function getProvider(fullName: string): GitLabPRProvider {
+  let p = providerCache.get(fullName);
+  if (!p) {
+    p = new GitLabPRProvider({ token: pickToken(fullName), apiBase: API_BASE });
+    providerCache.set(fullName, p);
+  }
+  return p;
+}
 const previewMgr = new PreviewJobManager({ maxConcurrent: 3, autoReaper: true });
 
 // ─── Bridge 状态 (启动时填) ────────────────────────────────────
@@ -83,153 +127,166 @@ function methodNameFromContract(contractId: string | undefined): string | undefi
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(last) ? last : undefined;
 }
 
-// ─── Pipeline deps (bridge-aware, 失败自动降级 mock) ─────────────
-const deps: OrchestratorDeps = {
-  resolveSpan: async (span) => {
-    const norm = normalizeJaegerSpan(span);
-    const top = norm.errorEvent?.topFrame;
-    const { method: stackMethod, cls: stackClass } = splitClassMethod(top?.classMethod);
-    const codeName =
-      norm.codeFunction && norm.codeFunction !== top?.classMethod
-        ? splitClassMethod(norm.codeFunction).method
-        : undefined;
-    const contractMethod = methodNameFromContract(norm.contractId);
+// ─── Pipeline deps factory (per-issue: 选 token + 选 bridge repo) ────
+function buildDeps(fullName: string): OrchestratorDeps {
+  const repo = pickBridgeRepo(fullName);
+  const provider = getProvider(fullName);
+  return {
+    resolveSpan: async (span) => {
+      const norm = normalizeJaegerSpan(span);
+      const top = norm.errorEvent?.topFrame;
+      const { method: stackMethod, cls: stackClass } = splitClassMethod(top?.classMethod);
+      const codeName =
+        norm.codeFunction && norm.codeFunction !== top?.classMethod
+          ? splitClassMethod(norm.codeFunction).method
+          : undefined;
+      const contractMethod = methodNameFromContract(norm.contractId);
 
-    const candidates = [stackMethod, codeName, contractMethod].filter(
-      (x): x is string => !!x,
-    );
-    let resolved: Awaited<ReturnType<typeof resolveHandler>> | null = null;
-    let usedCandidate: string | undefined;
-    if (bridgeOk) {
-      for (const name of candidates) {
-        resolved = await resolveHandler(
-          {
-            name,
-            fileHint: top?.file ?? norm.codeFilePath,
-            classHint: stackClass,
-            repo: BRIDGE_REPO,
-          },
-          fetch,
-        );
-        if (resolved) {
-          usedCandidate = name;
-          break;
+      const candidates = [stackMethod, codeName, contractMethod].filter(
+        (x): x is string => !!x,
+      );
+      let resolved: Awaited<ReturnType<typeof resolveHandler>> | null = null;
+      let usedCandidate: string | undefined;
+      if (bridgeOk) {
+        for (const name of candidates) {
+          resolved = await resolveHandler(
+            {
+              name,
+              fileHint: top?.file ?? norm.codeFilePath,
+              classHint: stackClass,
+              repo,
+            },
+            fetch,
+          );
+          if (resolved) {
+            usedCandidate = name;
+            break;
+          }
         }
       }
-    }
 
-    if (resolved) {
+      if (resolved) {
+        return {
+          resolved: true,
+          handler: {
+            uid: resolved.uid,
+            filePath: resolved.filePath,
+            name: resolved.name,
+            startLine: resolved.startLine,
+          },
+          kind: norm.kind ?? 'http',
+          contractId: norm.contractId,
+          topFrame: top,
+          resolvedBy: resolved.resolvedBy,
+          bridgeNote: `bridge hit via ${resolved.resolvedBy} (candidate=${usedCandidate}, repo=${repo})`,
+        } as any;
+      }
+
+      const fallbackUid = norm.contractId
+        ? `Method:${norm.contractId.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 60)}`
+        : `Method:Unknown_${(span as any).spanID?.slice(0, 6) ?? 'x'}`;
       return {
         resolved: true,
         handler: {
-          uid: resolved.uid,
-          filePath: resolved.filePath,
-          name: resolved.name,
-          startLine: resolved.startLine,
+          uid: fallbackUid,
+          filePath: top?.file ?? norm.codeFilePath ?? 'src/main/java/Unknown.java',
+          name: norm.contractId ?? candidates[0] ?? 'unknown',
         },
         kind: norm.kind ?? 'http',
         contractId: norm.contractId,
         topFrame: top,
-        resolvedBy: resolved.resolvedBy,
-        bridgeNote: `bridge hit via ${resolved.resolvedBy} (candidate=${usedCandidate})`,
+        resolvedBy: 'fallback',
+        bridgeNote: bridgeOk
+          ? `bridge miss for [${candidates.join(',')}] in repo=${repo}`
+          : 'bridge offline — mock fallback',
       } as any;
-    }
+    },
 
-    // bridge miss / down → fallback (跟 v1.1.0 行为一致, 但加诊断字段)
-    const fallbackUid = norm.contractId
-      ? `Method:${norm.contractId.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 60)}`
-      : `Method:Unknown_${(span as any).spanID?.slice(0, 6) ?? 'x'}`;
-    return {
-      resolved: true,
-      handler: {
-        uid: fallbackUid,
-        filePath: top?.file ?? norm.codeFilePath ?? 'src/main/java/Unknown.java',
-        name: norm.contractId ?? candidates[0] ?? 'unknown',
-      },
-      kind: norm.kind ?? 'http',
-      contractId: norm.contractId,
-      topFrame: top,
-      resolvedBy: 'fallback',
-      bridgeNote: bridgeOk
-        ? `bridge miss for [${candidates.join(',')}] in repo=${BRIDGE_REPO}`
-        : 'bridge offline — mock fallback',
-    } as any;
-  },
-
-  apiBlastRadius: async (p) => {
-    const parsed = parseMethodId(p.target_uid);
-    const name = parsed?.name;
-    if (!bridgeOk || !name) {
+    apiBlastRadius: async (p) => {
+      const parsed = parseMethodId(p.target_uid);
+      const name = parsed?.name;
+      if (!bridgeOk || !name) {
+        return {
+          target_uid: p.target_uid,
+          files: [],
+          callers: [],
+          note: bridgeOk
+            ? 'bridge ok but target_uid not parsable as Method id (fallback handler)'
+            : 'bridge offline — mock fallback',
+        };
+      }
+      const r = await blastRadius(
+        {
+          name,
+          repo,
+          direction: 'upstream',
+          depth: p.depth ?? 2,
+          limit: 100,
+        },
+        fetch,
+      );
       return {
         target_uid: p.target_uid,
-        files: [],
-        callers: [],
-        note: bridgeOk
-          ? 'bridge ok but target_uid not parsable as Method id (fallback handler)'
-          : 'bridge offline — mock fallback',
+        target_name: name,
+        depth: r.depth,
+        total: r.total,
+        truncated: r.truncated,
+        strategy: r.strategy,
+        risk: r.risk,
+        processesAffected: r.processesAffected,
+        modulesAffected: r.modulesAffected,
+        files: r.files,
+        callers: r.callers.slice(0, 50),
+        affectedProcesses: r.affectedProcesses,
+        affectedModules: r.affectedModules,
+        note:
+          r.strategy === 'gitnexus-impact-cli'
+            ? `gitnexus impact CLI: risk=${r.risk}, ${r.total} impacted`
+            : r.strategy === 'cypher-fallback'
+              ? `cypher walk fallback (CLI 0 impactedCount): ${r.total} callers`
+              : 'no callers found (isolated symbol)',
       };
-    }
-    const r = await blastRadius(
-      {
-        name,
-        repo: BRIDGE_REPO,
-        direction: 'upstream',
-        depth: p.depth ?? 2,
-        limit: 100,
-      },
-      fetch,
-    );
-    return {
-      target_uid: p.target_uid,
-      target_name: name,
-      depth: r.depth,
-      total: r.total,
-      truncated: r.truncated,
-      files: r.files,
-      callers: r.callers.slice(0, 50),
-      note: r.total === 0 ? 'no callers found (isolated symbol)' : `bridge cypher upstream depth=${r.depth}`,
-    };
-  },
+    },
 
-  regressionForensics: async (p) => {
-    // 真 forensics 需要 git log + handler filePath 过滤; 当前 webhook server 不挂仓盘.
-    // bridge 启用时至少标记真路径来源, 留给 Stage 4 后续实现.
-    return {
-      suspects: [],
-      spanCount: p.spans.length,
-      note: bridgeOk
-        ? 'bridge ok — forensics 需仓盘 git log, 待 Stage 4 后续实现 (issue 上 trace 含真 spans)'
-        : 'mock - 业务仓未 GitNexus 索引',
-    };
-  },
+    regressionForensics: async (p) => {
+      return {
+        suspects: [],
+        spanCount: p.spans.length,
+        note: bridgeOk
+          ? `bridge ok (repo=${repo}) — forensics 需仓盘 git log, 待 Stage 4 后续实现`
+          : 'mock - bridge offline',
+      };
+    },
 
-  genE2ETests: async (p) => {
-    const parsed = parseMethodId(p.target_uid);
-    const safeName = (parsed?.name ?? 'unknown').replace(/[^A-Za-z0-9_]/g, '_').slice(0, 40);
-    return {
-      target_uid: p.target_uid,
-      files: [
-        { path: `src/test/auto-generated/Test_${safeName}.java` },
-      ],
-      sourceHandlerFile: parsed?.filePath ?? null,
-      note: bridgeOk && parsed
-        ? `R-1 scaffold + TODO 占位 (bridge: 引用真 handler ${parsed.filePath})`
-        : 'R-1 scaffold + TODO 占位',
-    };
-  },
+    genE2ETests: async (p) => {
+      const parsed = parseMethodId(p.target_uid);
+      const safeName = (parsed?.name ?? 'unknown').replace(/[^A-Za-z0-9_]/g, '_').slice(0, 40);
+      return {
+        target_uid: p.target_uid,
+        files: [
+          { path: `src/test/auto-generated/Test_${safeName}.java` },
+        ],
+        sourceHandlerFile: parsed?.filePath ?? null,
+        note:
+          bridgeOk && parsed
+            ? `R-1 scaffold + TODO 占位 (bridge: 引用真 handler ${parsed.filePath})`
+            : 'R-1 scaffold + TODO 占位',
+      };
+    },
 
-  validateInPreview: async (p) =>
-    validateInPreview(previewMgr, p as any) as any,
-  checkPreviewStatus: async (p) =>
-    checkPreviewStatus(previewMgr, p as any) as any,
-  autoPR: async (p) =>
-    await runAutoPR({
-      candidate: p.candidate,
-      provider,
-      dryRun: !!p.dryRun,
-      stage6Pass: !!p.stage6Pass,
-    }),
-};
+    validateInPreview: async (p) =>
+      validateInPreview(previewMgr, p as any) as any,
+    checkPreviewStatus: async (p) =>
+      checkPreviewStatus(previewMgr, p as any) as any,
+    autoPR: async (p) =>
+      await runAutoPR({
+        candidate: p.candidate,
+        provider,
+        dryRun: !!p.dryRun,
+        stage6Pass: !!p.stage6Pass,
+      }),
+  };
+}
 
 const app = express();
 
@@ -252,6 +309,8 @@ mountWebhookRoutes(app, {
     console.log(
       `[issue] ${event.fullName} #${event.issueNumber} labels=${(event.issueLabels ?? []).join(',')}`,
     );
+    const provider = getProvider(event.fullName);
+    const deps = buildDeps(event.fullName);
     const r = await handleIssueOpened(
       {
         fullName: event.fullName,
@@ -263,7 +322,7 @@ mountWebhookRoutes(app, {
       {
         runPipeline: async (input) => {
           console.log(
-            `  → pipeline spans=${input.spans.length} preview=${!!input.preview} prTarget=${!!input.prTarget} dryRun=${input.prTarget?.dryRun}`,
+            `  → pipeline spans=${input.spans.length} preview=${!!input.preview} prTarget=${!!input.prTarget} dryRun=${input.prTarget?.dryRun} bridgeRepo=${pickBridgeRepo(event.fullName)}`,
           );
           return await runPipeline(input, deps);
         },
@@ -292,9 +351,9 @@ const httpServer = app.listen(PORT, '0.0.0.0', async () => {
       `⚠️  GitNexus eval-server 不可达 (${ping.error ?? 'unknown'}); ` +
         `S2-S5 走 mock fallback. 启动: gitnexus eval-server --port 4848 &`,
     );
-  } else if (!bridgeRepos.includes(BRIDGE_REPO)) {
+  } else if (!bridgeRepos.includes(BRIDGE_REPO_DEFAULT)) {
     console.warn(
-      `⚠️  eval-server 已通但 GITNEXUS_BRIDGE_REPO=${BRIDGE_REPO} 不在已索引列表; 可用: ${bridgeRepos.join(', ')}`,
+      `⚠️  eval-server 已通但 GITNEXUS_BRIDGE_REPO=${BRIDGE_REPO_DEFAULT} 不在已索引列表; 可用: ${bridgeRepos.join(', ')}`,
     );
   }
   console.log(
@@ -317,8 +376,14 @@ const httpServer = app.listen(PORT, '0.0.0.0', async () => {
     `  autoPRLive   ${process.env.GITNEXUS_AUTOPR_LIVE === '1' ? '✅ LIVE 真发' : '⚠️ dryRun (默认安全)'}`,
   );
   console.log(
-    `  bridge       ${bridgeOk ? `✅ eval-server 通 (repo=${BRIDGE_REPO}, ${bridgeRepos.length} indexed)` : '⚠️ offline (mock fallback)'}`,
+    `  bridge       ${bridgeOk ? `✅ eval-server 通 (default repo=${BRIDGE_REPO_DEFAULT}, ${bridgeRepos.length} indexed)` : '⚠️ offline (mock fallback)'}`,
   );
+  console.log(
+    `  tokens       ${TOKEN_MAP ? `${Object.keys(TOKEN_MAP).length} per-repo (TOKEN_MAP)` : 'single (TOKEN)'}`,
+  );
+  if (Object.keys(BRIDGE_REPO_MAP).length > 0) {
+    console.log(`  repoMap      ${JSON.stringify(BRIDGE_REPO_MAP)}`);
+  }
   console.log(
     '═══════════════════════════════════════════════════════════',
   );
