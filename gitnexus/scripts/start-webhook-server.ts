@@ -175,6 +175,11 @@ function triggerGroupRebuild(triggerAlias: string): void {
   const groups = findGroupsContaining(triggerAlias);
   if (groups.length === 0) return;
 
+  // 跨 group dedup: 对称 partners ({"a":["b"],"b":["a"]}) 配置下, a push 会同时命中
+  // group a + group b 两组, 不去重会重复 spawn 同一 partner. 下面这个 set 跨 group 持有.
+  const spawnedAliases = new Set<string>();
+  spawnedAliases.add(triggerAlias); // 触发仓自身不重复 reindex
+
   const now = Date.now();
   for (const groupKey of groups) {
     const lastTs = groupRebuildLastTs.get(groupKey) ?? 0;
@@ -193,6 +198,13 @@ function triggerGroupRebuild(triggerAlias: string): void {
 
     let spawnCount = 0;
     for (const partnerAlias of allMembers) {
+      // 跨 group dedup: 同一 partner 在多个 group 都出现时只 spawn 一次
+      if (spawnedAliases.has(partnerAlias)) {
+        console.log(
+          `[push] group rebuild for [${groupKey}]: skip ${partnerAlias} (already spawned in this trigger)`,
+        );
+        continue;
+      }
       const partnerPath = CROSS_REPO_LOCAL_PATHS[partnerAlias];
       if (!partnerPath || !existsSync(partnerPath)) {
         console.log(
@@ -200,10 +212,12 @@ function triggerGroupRebuild(triggerAlias: string): void {
         );
         continue;
       }
+      spawnedAliases.add(partnerAlias);
       console.log(
         `[push] group rebuild for [${groupKey}]: spawn gitnexus analyze path=${partnerPath} (partner=${partnerAlias})`,
       );
-      const child = spawn('gitnexus', ['analyze', '--path', partnerPath], {
+      // gitnexus 1.4.1 真签名: `analyze [path]` (positional, 不是 --path flag)
+      const child = spawn('gitnexus', ['analyze', partnerPath], {
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       let tail = '';
@@ -348,7 +362,8 @@ async function p1Reindex(opts: {
     `  → P1 reindex start: jobId=${jobId.slice(0, 8)} repo=${fullName} path=${repoPath} ${stale.commitsBehind} commits behind`,
   );
   // detached: false 让 server 退出时一起干掉; stdio pipe 收 stderr 用于诊断
-  const child = spawn('gitnexus', ['analyze', '--path', repoPath], {
+  // gitnexus 1.4.1 真签名: `analyze [path]` (positional, 不是 --path flag) — 原代码 bug, push 路径之前从没真跑过
+  const child = spawn('gitnexus', ['analyze', repoPath], {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stderrTail = '';
