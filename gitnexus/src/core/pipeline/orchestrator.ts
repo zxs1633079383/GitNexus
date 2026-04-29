@@ -258,23 +258,53 @@ export async function runPipeline(
     s7_autopr = await runStage<S7Output>('S7', async () => {
       const stage6Pass = s6_preview.status === 'ok' && !!s6_preview.output?.pass;
       const s5Files = extractS5GeneratedFiles(s5_testgen);
-      // S5 输出的 path 是相对路径但没文件内容；这里只把脚手架名贴进 PR body 描述。
-      // 真实 patch 由 patch-llm（R-14）产生 — 当前 stub 不产 file patch，故 files=[]。
+      const issueRef = input.prTarget!.issueRef ?? '';
+      const issueNum = issueRef.replace(/^#/, '') || `auto-${Date.now().toString(36)}`;
+      const prBodyMd = buildPRBody({
+        header: input.prTarget!.bodyHeader,
+        inputSpanCount: input.spans.length,
+        resolvedHandlerUids,
+        s4_forensics,
+        s5_files: s5Files,
+        s6: s6_preview,
+        issueRef: input.prTarget!.issueRef,
+      });
+
+      // 让 MR/PR 真带 commit + diff —— 写一份 7 阶段诊断报告 + S5 测试脚手架 stub
+      // 路径走 .gitnexus/reports/ 不污染业务源码；R-12 policy 默认允许该路径
+      const candidateFiles: PRCandidate['files'] = [
+        {
+          path: `.gitnexus/reports/auto-pr-issue-${issueNum}.md`,
+          content: buildAutoPRReportFile({
+            issueRef,
+            inputSpanCount: input.spans.length,
+            resolvedHandlerUids,
+            s2_resolve,
+            s3_blast,
+            s4_forensics,
+            s5_testgen,
+            s6_preview,
+          }),
+          op: 'create',
+        },
+      ];
+
+      // S5 测试脚手架 stub — 让 PR diff 能看到生成的测试占位文件 (R-1 scaffold)
+      for (const path of s5Files.slice(0, 5)) {
+        candidateFiles.push({
+          path,
+          content: buildTestScaffoldStub(path, issueRef, input.prTarget!.bodyHeader ?? ''),
+          op: 'create',
+        });
+      }
+
       const candidate: PRCandidate = {
         owner: input.prTarget!.owner,
         repo: input.prTarget!.repo,
         baseBranch: input.prTarget!.baseBranch,
         title: `${input.prTarget!.titlePrefix ?? 'fix(auto):'} GitNexus 7 阶段闭环自动 PR`,
-        bodyMarkdown: buildPRBody({
-          header: input.prTarget!.bodyHeader,
-          inputSpanCount: input.spans.length,
-          resolvedHandlerUids,
-          s4_forensics,
-          s5_files: s5Files,
-          s6: s6_preview,
-          issueRef: input.prTarget!.issueRef,
-        }),
-        files: [], // 真实 patch 接 patch-llm 后填；当前阶段保持 dry-run 友好
+        bodyMarkdown: prBodyMd,
+        files: candidateFiles,
         labels: input.prTarget!.labels ?? ['auto-fix', 'gitnexus-pipeline'],
         issueRef: input.prTarget!.issueRef,
       };
@@ -320,9 +350,175 @@ export async function runPipeline(
   };
 }
 
+/** 让 PR/MR 真带 diff: 把 7 阶段诊断报告写成 markdown 文件 */
+function buildAutoPRReportFile(args: {
+  issueRef: string;
+  inputSpanCount: number;
+  resolvedHandlerUids: string[];
+  s2_resolve: StageResult<S2Output>[];
+  s3_blast: StageResult<S3Output>[];
+  s4_forensics: StageResult<S4Output>;
+  s5_testgen: StageResult<S5Output>[];
+  s6_preview: StageResult<S6Output>;
+}): string {
+  const L: string[] = [];
+  L.push(`# Auto-PR 诊断报告 — ${args.issueRef || '(no issue ref)'}`);
+  L.push('');
+  L.push(`> 由 GitNexus Pipeline Orchestrator 自动生成`);
+  L.push(`> 生成时间: ${new Date().toISOString()}`);
+  L.push(`> 输入 spans: ${args.inputSpanCount}`);
+  L.push(`> 解析 handlers: ${args.resolvedHandlerUids.length}`);
+  L.push('');
+
+  L.push('## S2 · Trace2Code Resolver');
+  for (const r of args.s2_resolve.slice(0, 30)) {
+    if (r.status !== 'ok' || !r.output) continue;
+    const o = r.output as any;
+    L.push(`- \`${o.contractId ?? o.handler?.name ?? '?'}\` → \`${o.handler?.uid ?? '?'}\``);
+    if (o.handler?.filePath) L.push(`  - 文件: \`${o.handler.filePath}\``);
+  }
+  L.push('');
+
+  L.push('## S3 · Blast Radius');
+  for (const r of args.s3_blast.slice(0, 10)) {
+    if (r.status !== 'ok' || !r.output) continue;
+    const o = r.output as any;
+    L.push(`### ${o.target_uid ?? '?'}`);
+    if (Array.isArray(o.files)) {
+      L.push('受影响文件:');
+      for (const f of o.files.slice(0, 20)) L.push(`- \`${typeof f === 'string' ? f : (f as any).filePath ?? JSON.stringify(f)}\``);
+    }
+    if (Array.isArray(o.cross) && o.cross.length > 0) {
+      L.push('');
+      L.push('跨仓影响:');
+      for (const c of o.cross.slice(0, 10)) L.push(`- \`${(c as any).repo}\` → \`${(c as any).uid}\` (${(c as any).risk ?? '?'})`);
+    }
+    if (o.note) L.push(`> _${o.note}_`);
+  }
+  L.push('');
+
+  L.push('## S4 · Auto Regression Forensics');
+  if (args.s4_forensics.status === 'ok' && args.s4_forensics.output) {
+    const o = args.s4_forensics.output as any;
+    const suspects = Array.isArray(o.suspects) ? o.suspects : [];
+    if (suspects.length === 0) L.push('_无嫌疑 commit_' + (o.note ? ` (${o.note})` : ''));
+    else {
+      L.push('| commit | confidence | symbol | 多久前 |');
+      L.push('|---|---|---|---|');
+      for (const s of suspects.slice(0, 10)) {
+        const time = s.timeAgoSec ? `${(s.timeAgoSec / 3600).toFixed(1)}h` : '?';
+        L.push(`| \`${(s.commitHash ?? '?').slice(0, 8)}\` | ${(s.confidence ?? 0).toFixed(2)} | \`${s.symbolUid ?? '?'}\` | ${time} |`);
+      }
+    }
+  }
+  L.push('');
+
+  L.push('## S5 · E2E Test Generator (R-1 scaffold)');
+  for (const r of args.s5_testgen) {
+    if (r.status !== 'ok' || !r.output) continue;
+    const o = r.output as any;
+    const fs: any[] = Array.isArray(o.files) ? o.files : [];
+    for (const f of fs) L.push(`- \`${typeof f === 'string' ? f : (f as any).path ?? '?'}\``);
+  }
+  L.push('');
+
+  L.push('## S6 · K8s Preview Env');
+  if (args.s6_preview.output) {
+    const o = args.s6_preview.output;
+    L.push(`- jobId: \`${o.jobId}\``);
+    L.push(`- namespace: \`${o.ns}\``);
+    L.push(`- finalStatus: \`${o.finalStatus}\``);
+    L.push(`- pass: **${o.pass ? '✅ true' : '❌ false'}**`);
+    const tr = o.testResult as any;
+    if (tr) {
+      L.push(`- testResult source: \`${tr.source ?? 'unknown'}\``);
+      L.push(`- pass=${tr.passed ?? 0} fail=${tr.failed ?? 0} skip=${tr.skipped ?? 0}`);
+    }
+  } else {
+    L.push(`status: ${args.s6_preview.status}, ${args.s6_preview.reason ?? ''}`);
+  }
+  L.push('');
+  L.push('---');
+  L.push('<sub>本文件由 GitNexus Pipeline 自动写入 PR/MR 让 diff 真实可见。可安全删除 — 仅作诊断快照。</sub>');
+  return L.join('\n');
+}
+
+function buildTestScaffoldStub(path: string, issueRef: string, header: string): string {
+  const isJava = path.endsWith('.java');
+  const isGo = path.endsWith('.go');
+  const isTs = path.endsWith('.ts');
+  const isPy = path.endsWith('.py');
+  const fnHint = path.split('/').pop()?.replace(/\.\w+$/, '') ?? 'test';
+
+  if (isJava) {
+    return `// AUTO-GENERATED by GitNexus E2E Test Generator (R-1 scaffold)
+// 关联 issue: ${issueRef}
+// ${header.split('\n')[0] || ''}
+// TODO: 由开发者补全 assertion (GitNexus 当前阶段只产生脚手架，不调 LLM 生成断言以避免幻觉)
+
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.*;
+
+class ${fnHint} {
+    @Test
+    void shouldHandle_${fnHint.replace(/[^a-zA-Z0-9_]/g, '_')}() {
+        // TODO: arrange
+        // TODO: act
+        // TODO: assert
+        fail("TODO: implement test by developer");
+    }
+}
+`;
+  }
+  if (isGo) {
+    return `// AUTO-GENERATED by GitNexus E2E Test Generator (R-1 scaffold)
+// issue: ${issueRef}
+// TODO: 由开发者补全 assertion
+
+package autogen
+
+import "testing"
+
+func Test${fnHint.replace(/[^a-zA-Z0-9]/g, '_')}(t *testing.T) {
+    // TODO: arrange
+    // TODO: act
+    // TODO: assert
+    t.Skip("TODO: implement test by developer")
+}
+`;
+  }
+  if (isTs) {
+    return `// AUTO-GENERATED by GitNexus E2E Test Generator (R-1 scaffold)
+// issue: ${issueRef}
+// TODO: 由开发者补全 assertion
+
+import { describe, it, expect } from 'vitest';
+
+describe('${fnHint}', () => {
+  it.todo('should handle ${fnHint}');
+});
+`;
+  }
+  if (isPy) {
+    return `# AUTO-GENERATED by GitNexus E2E Test Generator (R-1 scaffold)
+# issue: ${issueRef}
+# TODO: 由开发者补全 assertion
+
+import pytest
+
+@pytest.mark.skip(reason="TODO: implement test by developer")
+def test_${fnHint.replace(/[^a-zA-Z0-9_]/g, '_')}():
+    pass
+`;
+  }
+  return `# Auto-generated test scaffold\n# issue: ${issueRef}\n# TODO: implement\n`;
+}
+
 /** 暴露给单测 — 便于校验 PR body 拼接逻辑 */
 export const __test = {
   buildPRBody,
+  buildAutoPRReportFile,
+  buildTestScaffoldStub,
   extractHandlerUid,
   extractHandlerFile,
   extractS5GeneratedFiles,
