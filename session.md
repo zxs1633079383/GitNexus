@@ -412,7 +412,10 @@ backlog (并行线，不阻塞闭环):
   · P2 Multi-hop crossDepth>1
   · P3 Auto Wiki 刷新
   · P6 OCaml LanguageProvider
-  · 业务仓 GitNexus 索引 (S3-S5 真跑前置)
+  · ⚠️ GitNexus 版本对齐 (本仓 lbug ↔ 全局 1.4.1 KuzuDB 不通)
+    详见 docs/backlog/gitnexus-version-sync.md
+    短期 MVP: eval-server HTTP 桥接 (方案 A.2)
+    长期: OSS 2.x 时切 KuzuDB
 ```
 
 ---
@@ -450,6 +453,114 @@ e2e/v0.3.0-real-jaeger  真 Jaeger 端到端
 
 > GitNexus 是 Agentic DevOps 闭环的"代码真相层"——别的层可以不准，**它必须确定**。
 > 每一次改动先问：这会让 Agent 多一份能信任的硬约束，还是多一层概率猜测？
+
+---
+
+## 15.5 🔥 单开窗口接力 — MCP 桥接 (方案 A.2) 任务说明
+
+**任务名**：把 webhook server 的 mock S2/S3/S4 替换成真索引数据（通过 HTTP 桥接全局 gitnexus）。
+
+**为什么需要**：
+- 全局 `gitnexus` 1.4.1 (KuzuDB) 已索引 cses-java (65k nodes) + mattermost (46k nodes)
+- 本仓 src tree (lbug) 跟全局 schema 不通，webhook server 拿不到这份索引
+- 当前 webhook server 在 S3-S5 返回 mock 数据 (`note: '业务仓未 GitNexus 索引'`)
+- **MR diff 里 contractId 真实，但 blast radius / forensics 都是 stub**
+
+**桥接架构**：
+```
+webhook server (本仓 lbug, port 3034)
+   │ S2 resolveSpan / S3 apiBlastRadius / S4 forensics
+   ▼ HTTP fetch
+gitnexus eval-server (全局 1.4.1, port 4848)
+   ▼
+KuzuDB 真索引 (cses-java / mattermost)
+```
+
+**第一步**：启全局 eval-server
+```bash
+gitnexus eval-server --port 4848 &
+# 探活
+curl http://localhost:4848/api/heartbeat
+```
+
+**第二步**：写桥接模块 `gitnexus/scripts/mcp-bridge.ts` (~80 行)
+```ts
+const BASE = process.env.GITNEXUS_EVAL_BASE ?? 'http://localhost:4848';
+
+export async function callImpact(target: string, repo: string, opts: { depth?: number; cross_depth?: number } = {}) {
+  const r = await fetch(`${BASE}/api/impact`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ target, repo, ...opts }),
+  });
+  return r.json();
+}
+
+export async function callCypher(query: string, repo: string) {
+  const r = await fetch(`${BASE}/api/cypher`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, repo }),
+  });
+  return r.json();
+}
+```
+
+**注意**：先 `curl http://localhost:4848/` 探一下 eval-server 实际的 API 路径（可能是 `/tool/impact` / `/api/impact` / `/mcp/tools/call`），路径不一定跟我写的一样。
+
+**第三步**：改 `start-webhook-server.ts`，注入 deps 替换 mock：
+```ts
+import { callImpact, callCypher } from './mcp-bridge.js';
+
+const REPO_BY_PATH: Record<string, string> = {
+  'cses/java/cses/cses': 'cses-java',     // gitnexus list 里的本地 alias
+  'cses/go/mattermost': 'mattermost',
+};
+
+const deps: OrchestratorDeps = {
+  resolveSpan: async (span) => {
+    const norm = normalizeJaegerSpan(span);
+    const repo = REPO_BY_PATH[fullName] ?? 'cses-java';
+    // 用 cypher 反查 Route → handler
+    const r = await callCypher(
+      `MATCH (rt:Route {name: '${norm.contractId}'})-[:HANDLES_ROUTE]-(m:Method) RETURN m.uid, m.filePath LIMIT 1`,
+      repo,
+    );
+    if (r.rows?.[0]) {
+      return { resolved: true, handler: { uid: r.rows[0]['m.uid'], filePath: r.rows[0]['m.filePath'] } };
+    }
+    // fallback: 用 contractId 当 UID
+    return { resolved: true, handler: { uid: norm.contractId } };
+  },
+  apiBlastRadius: async (p) => callImpact(p.target_uid, REPO_BY_PATH[fullName], {
+    depth: p.depth, cross_depth: p.cross_depth,
+  }),
+  // ... 其他 stage 类似
+};
+```
+
+**第四步**：跑一次 e2e 验证 — 在 cses-java 建一个 issue，看评论里：
+- ❌ 之前: `note: '业务仓未 GitNexus 索引'`
+- ✅ 之后: `受影响文件: src/main/java/com/yundiz/真实文件路径.java`
+
+**DOD**：
+- [ ] eval-server 后台跑通 + 探活
+- [ ] mcp-bridge.ts 写好 + 单测 (mock fetch)
+- [ ] start-webhook-server.ts 替换 4 处 mock (S2 真 cypher / S3 真 impact)
+- [ ] 在 cses-java 建 issue 跑 e2e
+- [ ] MR diff 里 `.gitnexus/reports/auto-pr-issue-N.md` 含真业务文件路径
+- [ ] 提 commit + tag `mvp/v1.2.0-bridge` (或类似)
+
+**关键参考文档**：
+- `docs/backlog/gitnexus-version-sync.md` — 完整背景 + 长期对齐路线
+- `docs/multi-repo/quickstart.md` — 业务仓接入流程
+- `gitnexus/scripts/start-webhook-server.ts` — 当前 mock deps 注入位置
+
+**当前 server 状态（不要重启）**：
+- PID: `cat /tmp/gnx-server.pid`
+- 监听 0.0.0.0:3034
+- LIVE 模式开着
+- 你单开窗口跑 eval-server 不会冲突（不同端口）
 
 ---
 
