@@ -14,7 +14,9 @@ import {
   sanitizeBranchName,
 } from '../../src/core/auto-pr/branch-manager.js';
 import { runAutoPR, makeDryRunProvider } from '../../src/core/auto-pr/auto-pr.js';
-import { getPatchSystemPromptForTest } from '../../src/core/auto-pr/patch-llm.js';
+// R-14 systemPrompt 真实现已迁到 scripts/patch-runner.ts (LIVE 走 claude -p);
+// 老的 src/core/auto-pr/patch-llm.ts 是 offline stub, 在 single-repo/v1.0.1 删除
+import { PATCH_SYSTEM_PROMPT } from '../../scripts/patch-runner.js';
 import { DEFAULT_AUTO_PR_POLICY } from '../../src/core/auto-pr/types.js';
 
 describe('policy (R-12)', () => {
@@ -84,14 +86,16 @@ describe('branch-manager (Fix-11)', () => {
   });
 });
 
-describe('patch-llm (R-14)', () => {
-  it('systemPrompt hard-blocks workflow / .env / new deps', () => {
-    const sp = getPatchSystemPromptForTest();
-    expect(sp).toMatch(/\.github\/workflows/);
-    expect(sp).toMatch(/\.env/);
-    expect(sp).toMatch(/\.pem/);
-    expect(sp).toMatch(/不允许引入新依赖/);
-    expect(sp).toMatch(/≤ 200/);
+describe('patch-llm (R-14) — claude-cli 实现 systemPrompt 安全约束', () => {
+  it('systemPrompt hard-blocks workflow / .env / new deps / 真断言要求', () => {
+    expect(PATCH_SYSTEM_PROMPT).toMatch(/\.github\/workflows/);
+    expect(PATCH_SYSTEM_PROMPT).toMatch(/\.env/);
+    expect(PATCH_SYSTEM_PROMPT).toMatch(/凭证/);
+    expect(PATCH_SYSTEM_PROMPT).toMatch(/不允许引入新依赖/);
+    expect(PATCH_SYSTEM_PROMPT).toMatch(/≤ 200/);
+    // R-14.6: testFiles 必须含真断言, 禁 fail("TODO") / @Disabled / @Ignore
+    expect(PATCH_SYSTEM_PROMPT).toMatch(/真断言/);
+    expect(PATCH_SYSTEM_PROMPT).toMatch(/fail\("TODO"\)/);
   });
 });
 

@@ -57,7 +57,7 @@ export interface BuildPipelineInputArgs {
   fullName: string; // owner/repo from webhook payload
   issueNumber: number;
   issueTitle: string;
-  /** 是否实际走 live 路径（issue 含 'gitnexus:auto-pr-live' 标签时 caller 设 true）*/
+  /** 是否实际走 live 路径（label + env GITNEXUS_AUTOPR_LIVE === '1' 都满足时为 true; S6 那条由 orchestrator 把关）*/
   liveAutoPR: boolean;
   defaultBaseBranch?: string;
 }
@@ -454,7 +454,12 @@ export async function handleIssueOpened(
     }
   }
 
-  const live = args.issueLabels.includes(LIVE_LABEL);
+  // 三因子 LIVE 闸 (R-12):
+  //   ① issue 含 LIVE_LABEL  ② env GITNEXUS_AUTOPR_LIVE === '1'  ③ S6 真绿勾 (orchestrator stage6Pass)
+  // 这里负责前两条 (label + env); S6 那条由 orchestrator 在 autoPR.stage6Pass 处控.
+  const labelOk = args.issueLabels.includes(LIVE_LABEL);
+  const envOk = process.env.GITNEXUS_AUTOPR_LIVE === '1';
+  const live = labelOk && envOk;
   const input = buildPipelineInput({
     block,
     fullName: args.fullName,

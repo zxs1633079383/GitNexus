@@ -54,7 +54,7 @@ Last reviewed: 2026-04-29
 - **OrchestratorDeps** — `gitnexus/src/core/pipeline/types.ts` (依赖注入 surface, mock/真都从这里走)
 - **MCP Bridge** — `gitnexus/scripts/mcp-bridge.ts` (HTTP fetch 全局 `gitnexus eval-server` 桥接 KuzuDB 索引)
 - **Webhook Server (cses-pre)** — `gitnexus/scripts/start-webhook-server.ts` (生产入口, LIVE 模式 + token map + bridge repo map)
-- **Patch LLM (待接)** — `gitnexus/src/core/auto-pr/patch-llm.ts` (system prompt + safety 约束都写好, 但**没人 import**)
+- **Patch LLM (LIVE 真接)** — `gitnexus/scripts/patch-runner.ts` (调本机 `claude -p` 出真补丁 + 真断言, R-14 systemPrompt 隔离 + R-14 黑名单 `violatesSafetyPolicy` 二次门)
 
 ### 偏轨道 = 必须停下来问
 
@@ -83,7 +83,7 @@ Last reviewed: 2026-04-29
 - ✅ MVP v1.0.0 / v1.1.0 — 7 阶段全实现, 真 Jaeger e2e 跑通
 - ✅ MVP v1.2.0-bridge / .1 — webhook S2/S3 走真索引 (eval-server cypher), 多仓 token + bridge repo 路由
 - ✅ e2e/v0.4.0-live-bridge — issue#18 → MR!24, 全 7 阶段 LIVE 闭环 (S6 K8s preview pass + S7 真发)
-- 🟡 待接: `patch-llm.ts` 接入 orchestrator (现 PR 只含诊断报告 + S5 TODO scaffold, 不真改代码)
+- ✅ LIVE 真接: `scripts/patch-runner.ts` 接 `claude -p` (LIVE issue#22 → MR!27, 真改 Java 代码 + 真断言)
 - 🟡 待接: S4 forensics 真 git log (现返 `suspects: []`)
 - 🟡 待接: S5 LLM 生成真断言 (现 R-1 主动选 scaffold + TODO, 避幻觉)
 

@@ -328,6 +328,19 @@ export async function runPipeline(
         (f): f is string => typeof f === 'string',
       );
       const errorContext = stringifySpanError(input.spans[0]);
+      // 把 S4 Top1 嫌疑 commit + diff 喂给 LLM (H-3 修): 没有就传 undefined
+      const s4Output = s4_forensics.status === 'ok' ? (s4_forensics.output as {
+        topSuspectHash?: string;
+        topSuspectSubject?: string;
+        topSuspectDiff?: string;
+      } | undefined) : undefined;
+      const suspectCommit = s4Output?.topSuspectHash
+        ? {
+            hash: s4Output.topSuspectHash,
+            subject: s4Output.topSuspectSubject,
+            diff: s4Output.topSuspectDiff,
+          }
+        : undefined;
       if (handlerFile) {
         const t0 = now();
         const fix = await deps.genFix({
@@ -335,6 +348,7 @@ export async function runPipeline(
           handlerFilePath: handlerFile,
           errorContext,
           blastRadiusFiles: blastFiles.slice(0, 30),
+          suspectCommit,
           issueRef: input.prTarget?.issueRef,
         });
         const dur = now() - t0;

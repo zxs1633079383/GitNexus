@@ -49,7 +49,12 @@ import {
   parseMethodId,
 } from './mcp-bridge.js';
 import { runPatch, violatesSafetyPolicy } from './patch-runner.js';
+import { execFile as execFileCb } from 'node:child_process';
+import { promisify } from 'node:util';
+import { existsSync } from 'node:fs';
 import type { OrchestratorDeps } from '../src/core/pipeline/types.js';
+
+const execFile = promisify(execFileCb);
 
 const SECRET = process.env.GITNEXUS_GITLAB_SECRET ?? '';
 const SINGLE_TOKEN = process.env.GITNEXUS_AUTOPR_TOKEN ?? '';
@@ -120,12 +125,109 @@ const previewMgr = new PreviewJobManager({ maxConcurrent: 3, autoReaper: true })
 let bridgeOk = false;
 let bridgeRepos: string[] = [];
 
+// ─── LLM 并发闸 (H-2): 防止 N 个 issue 同时到 → N 个 claude 进程并行烧钱 ──
+const LLM_MAX_CONCURRENT = Math.max(1, Number(process.env.GITNEXUS_LLM_MAX_CONCURRENT ?? 1));
+let llmInFlight = 0;
+const llmWaitQueue: Array<() => void> = [];
+async function acquireLlmSlot(): Promise<void> {
+  if (llmInFlight < LLM_MAX_CONCURRENT) {
+    llmInFlight++;
+    return;
+  }
+  await new Promise<void>((resolve) => llmWaitQueue.push(resolve));
+  llmInFlight++;
+}
+function releaseLlmSlot(): void {
+  llmInFlight = Math.max(0, llmInFlight - 1);
+  const next = llmWaitQueue.shift();
+  if (next) next();
+}
+
 /** topFrame.classMethod 形如 "TaskMemberReader.loadSnapshot" — 切出 class + method. */
 function splitClassMethod(cm: string | undefined): { method?: string; cls?: string } {
   if (!cm) return {};
   const idx = cm.lastIndexOf('.');
   if (idx <= 0) return { method: cm };
   return { cls: cm.slice(0, idx), method: cm.slice(idx + 1) };
+}
+
+/**
+ * S4 真 git log forensics — 在 repoPath 跑 git log -p 找 handler.filePath 最近的 commits.
+ *
+ * 输出 Top N 嫌疑, 按时间倒序 (越近越嫌疑); rank by 时间近度 (简化版, 没接 blast radius 交叉,
+ * 因为 cses-java 索引已经做了 blast 第一道筛). caller 拿 suspects[0] 喂 LLM.
+ *
+ * 静默失败兜底: repoPath 不存在 / 不是 git / git log 错 → 返 [] 不抛.
+ */
+async function realGitForensics(opts: {
+  repoPath: string;
+  filePath: string;
+  lookback: number;
+  topN: number;
+}): Promise<Array<{ hash: string; subject: string; author: string; date: string; diff?: string; resolvedPath?: string }>> {
+  if (!existsSync(opts.repoPath)) return [];
+  // topFrame.file 通常是短名 'TaskMemberReader.java' (Java stack frame 不带包路径).
+  // git pathspec 默认只在 cwd 匹配, 不会递归子目录, 所以短名命中不到.
+  // 先用 `git ls-files '*<file>'` 把短名升成仓内完整路径; 没升上就维持原样.
+  let resolvedPath = opts.filePath;
+  if (!opts.filePath.includes('/')) {
+    try {
+      const { stdout: lsOut } = await execFile(
+        'git',
+        ['-C', opts.repoPath, 'ls-files', `*${opts.filePath}`],
+        { maxBuffer: 4 * 1024 * 1024 },
+      );
+      const matches = lsOut.split('\n').filter((l) => l.trim());
+      // 优先精确末段匹配 (避免 OtherTaskMemberReader.java 这种前缀冲突)
+      const exact = matches.find((m) => m.endsWith('/' + opts.filePath) || m === opts.filePath);
+      if (exact) resolvedPath = exact;
+      else if (matches.length === 1) resolvedPath = matches[0];
+    } catch {
+      /* 维持短名原样 */
+    }
+  }
+  try {
+    // 1. 拿最近 N 条 commit hash + subject + author + date
+    const { stdout: logOut } = await execFile(
+      'git',
+      [
+        '-C',
+        opts.repoPath,
+        'log',
+        `-${Math.max(1, Math.min(opts.lookback, 200))}`,
+        '--pretty=format:%H%x09%s%x09%an%x09%ad',
+        '--date=iso-strict',
+        '--',
+        resolvedPath,
+      ],
+      { maxBuffer: 4 * 1024 * 1024 },
+    );
+    const lines = logOut.split('\n').filter((l) => l.trim());
+    const suspects: Array<{ hash: string; subject: string; author: string; date: string; diff?: string }> = [];
+    const top = lines.slice(0, Math.max(1, opts.topN));
+    for (const line of top) {
+      const [hash, subject, author, date] = line.split('\t');
+      if (!hash) continue;
+      // 2. 拉 Top1 的 diff (其他不拉, 省字数)
+      let diff: string | undefined;
+      if (suspects.length === 0) {
+        try {
+          const { stdout: diffOut } = await execFile(
+            'git',
+            ['-C', opts.repoPath, 'show', '--no-color', hash, '--', resolvedPath],
+            { maxBuffer: 4 * 1024 * 1024 },
+          );
+          diff = diffOut.slice(0, 8000); // 截 8KB 防超长
+        } catch {
+          /* ignore, 留 undefined */
+        }
+      }
+      suspects.push({ hash, subject, author, date, diff, resolvedPath });
+    }
+    return suspects;
+  } catch {
+    return [];
+  }
 }
 
 /** contractId "http::POST::/Collaborate/loadWorkOrientForMember" → 末段 "loadWorkOrientForMember". */
@@ -260,12 +362,58 @@ function buildDeps(fullName: string): OrchestratorDeps {
     },
 
     regressionForensics: async (p) => {
+      const repoPath = REPO_PATH_MAP[fullName];
+      if (!repoPath || !existsSync(repoPath)) {
+        return {
+          suspects: [],
+          spanCount: p.spans.length,
+          note: `mock - repoPath 未配 (REPO_PATH_MAP[${fullName}] 缺失)`,
+        };
+      }
+      // 从 spans[0] 拉出 handler 文件路径 — 走 normalizer 拿 errorEvent.topFrame.file
+      // 没有 topFrame 则跳过 (S4 不抛错, 只返空)
+      let handlerFile: string | undefined;
+      for (const span of p.spans) {
+        const norm = normalizeJaegerSpan(span);
+        const f = norm.errorEvent?.topFrame?.file ?? norm.codeFilePath;
+        if (f) {
+          handlerFile = f;
+          break;
+        }
+      }
+      if (!handlerFile) {
+        return { suspects: [], spanCount: p.spans.length, note: 'no topFrame.file in spans' };
+      }
+      // 短名 (Java stack: 'TaskMemberReader.java') 通过 git ls-files 自动升级成仓内完整路径
+      const fileGlob = handlerFile.split(/[\\/]/).pop() ?? handlerFile;
+      const t0 = Date.now();
+      const suspects = await realGitForensics({
+        repoPath,
+        filePath: fileGlob,
+        lookback: p.lookback ?? 50,
+        topN: 3,
+      });
+      const elapsed = Date.now() - t0;
+      const resolvedPath = suspects[0]?.resolvedPath ?? fileGlob;
+      console.log(
+        `  → S4 git log: repo=${repoPath} resolved=${resolvedPath} found=${suspects.length} (${elapsed}ms)`,
+      );
       return {
-        suspects: [],
+        suspects: suspects.map((s) => ({
+          hash: s.hash,
+          subject: s.subject,
+          author: s.author,
+          date: s.date,
+          hasDiff: !!s.diff,
+        })),
+        topSuspectDiff: suspects[0]?.diff,
+        topSuspectHash: suspects[0]?.hash,
+        topSuspectSubject: suspects[0]?.subject,
         spanCount: p.spans.length,
-        note: bridgeOk
-          ? `bridge ok (repo=${repo}) — forensics 需仓盘 git log, 待 Stage 4 后续实现`
-          : 'mock - bridge offline',
+        handlerFile: resolvedPath,
+        note: suspects.length > 0
+          ? `git log -- ${resolvedPath} 找到 ${suspects.length} 个嫌疑 commit (Top1 含 diff)`
+          : `git log -- ${resolvedPath} 没找到 commit (lookback=${p.lookback ?? 50})`,
       };
     },
 
@@ -298,13 +446,17 @@ function buildDeps(fullName: string): OrchestratorDeps {
       }),
 
     // ── 可选: 真 LLM 补丁 + 真断言 (R-14, claude-cli 实现) ──
-    // 触发条件: 该 repo 在 REPO_PATH_MAP 里有本地 clone 路径
-    genFix: REPO_PATH_MAP[fullName]
+    // 触发条件:
+    //   ① REPO_PATH_MAP 配了本地 clone 路径
+    //   ② 路径真存在 (M-4 修, 不让 claude 拿空目录跑)
+    genFix: REPO_PATH_MAP[fullName] && existsSync(REPO_PATH_MAP[fullName])
       ? async (p) => {
           const t0 = Date.now();
           const repoPath = REPO_PATH_MAP[fullName];
+          // H-2: 走全局 semaphore, 同时 N 个 issue 到也只 LLM_MAX_CONCURRENT 并发
+          await acquireLlmSlot();
           console.log(
-            `  → genFix start: repoPath=${repoPath} handler=${p.handlerFilePath} blast=${p.blastRadiusFiles.length}`,
+            `  → genFix start: repoPath=${repoPath} handler=${p.handlerFilePath} blast=${p.blastRadiusFiles.length} suspect=${p.suspectCommit?.hash?.slice(0, 8) ?? 'none'} (slot ${llmInFlight}/${LLM_MAX_CONCURRENT})`,
           );
           try {
             const r = await runPatch({
@@ -351,6 +503,8 @@ function buildDeps(fullName: string): OrchestratorDeps {
               costUsd: 0,
               durationMs: Date.now() - t0,
             };
+          } finally {
+            releaseLlmSlot();
           }
         }
       : undefined,
@@ -410,8 +564,8 @@ mountWebhookRoutes(app, {
   },
 });
 
-// 启动: 先 ping bridge, 再监听端口
-const httpServer = app.listen(PORT, '0.0.0.0', async () => {
+// 启动顺序 (H-2 修): 先 ping eval-server 设 bridgeOk → 再 listen, 不留盲窗.
+async function startServer(): Promise<void> {
   const ping = await pingEvalServer(fetch);
   bridgeOk = ping.ok;
   bridgeRepos = ping.repos;
@@ -425,50 +579,61 @@ const httpServer = app.listen(PORT, '0.0.0.0', async () => {
       `⚠️  eval-server 已通但 GITNEXUS_BRIDGE_REPO=${BRIDGE_REPO_DEFAULT} 不在已索引列表; 可用: ${bridgeRepos.join(', ')}`,
     );
   }
-  console.log(
-    '═══════════════════════════════════════════════════════════',
-  );
-  console.log(
-    `🚀 GitNexus webhook server (cses-pre) listening on 0.0.0.0:${PORT}`,
-  );
-  console.log(
-    '═══════════════════════════════════════════════════════════',
-  );
-  console.log(`  health   GET  http://localhost:${PORT}/health`);
-  console.log(`  webhook  POST http://localhost:${PORT}/webhook (alias)`);
-  console.log(`  webhook  POST http://localhost:${PORT}/webhook/gitlab`);
-  console.log('');
-  console.log(`  provider     ${PROVIDER_KIND}`);
-  console.log(`  apiBase      ${API_BASE}`);
-  console.log(`  jaegerBase   ${process.env.JAEGER_QUERY_BASE ?? 'unset'}`);
-  console.log(
-    `  autoPRLive   ${process.env.GITNEXUS_AUTOPR_LIVE === '1' ? '✅ LIVE 真发' : '⚠️ dryRun (默认安全)'}`,
-  );
-  console.log(
-    `  bridge       ${bridgeOk ? `✅ eval-server 通 (default repo=${BRIDGE_REPO_DEFAULT}, ${bridgeRepos.length} indexed)` : '⚠️ offline (mock fallback)'}`,
-  );
-  console.log(
-    `  tokens       ${TOKEN_MAP ? `${Object.keys(TOKEN_MAP).length} per-repo (TOKEN_MAP)` : 'single (TOKEN)'}`,
-  );
-  if (Object.keys(BRIDGE_REPO_MAP).length > 0) {
-    console.log(`  repoMap      ${JSON.stringify(BRIDGE_REPO_MAP)}`);
+
+  // 同步检查: REPO_PATH_MAP 配的路径是否真存在 (M-4 修)
+  for (const [repoFullName, p] of Object.entries(REPO_PATH_MAP)) {
+    if (!existsSync(p)) {
+      console.warn(`⚠️  GITNEXUS_REPO_PATH_MAP[${repoFullName}]=${p} 路径不存在; 该 repo LLM 自动 disable`);
+    }
   }
-  console.log(
-    `  llmPatch     ${Object.keys(REPO_PATH_MAP).length > 0 ? `✅ ${Object.keys(REPO_PATH_MAP).length} repo (claude -p budget=$${LLM_BUDGET_USD})` : '⚪ disabled (no GITNEXUS_REPO_PATH_MAP)'}`,
-  );
-  console.log(
-    '═══════════════════════════════════════════════════════════',
-  );
-});
+
+  const liveActive = process.env.GITNEXUS_AUTOPR_LIVE === '1';
+  return new Promise<void>((resolve) => {
+    const s = app.listen(PORT, '0.0.0.0', () => {
+      console.log('═══════════════════════════════════════════════════════════');
+      console.log(`🚀 GitNexus webhook server (cses-pre) listening on 0.0.0.0:${PORT}`);
+      console.log('═══════════════════════════════════════════════════════════');
+      console.log(`  health   GET  http://localhost:${PORT}/health`);
+      console.log(`  webhook  POST http://localhost:${PORT}/webhook (alias)`);
+      console.log(`  webhook  POST http://localhost:${PORT}/webhook/gitlab`);
+      console.log('');
+      console.log(`  provider     ${PROVIDER_KIND}`);
+      console.log(`  apiBase      ${API_BASE}`);
+      console.log(`  jaegerBase   ${process.env.JAEGER_QUERY_BASE ?? 'unset'}`);
+      console.log(
+        `  autoPRLive   ${liveActive ? '✅ LIVE 真发 (env+label+S6 三因子)' : '⚠️ dryRun env 关 (即使 label 在也只发 dry-run)'}`,
+      );
+      console.log(
+        `  bridge       ${bridgeOk ? `✅ eval-server 通 (default repo=${BRIDGE_REPO_DEFAULT}, ${bridgeRepos.length} indexed)` : '⚠️ offline (mock fallback)'}`,
+      );
+      console.log(
+        `  tokens       ${TOKEN_MAP ? `${Object.keys(TOKEN_MAP).length} per-repo (TOKEN_MAP)` : 'single (TOKEN)'}`,
+      );
+      if (Object.keys(BRIDGE_REPO_MAP).length > 0) {
+        console.log(`  repoMap      ${JSON.stringify(BRIDGE_REPO_MAP)}`);
+      }
+      const validRepoPaths = Object.entries(REPO_PATH_MAP).filter(([, p]) => existsSync(p));
+      console.log(
+        `  llmPatch     ${validRepoPaths.length > 0 ? `✅ ${validRepoPaths.length} repo (claude -p budget=$${LLM_BUDGET_USD}, max-concurrent=${LLM_MAX_CONCURRENT})` : '⚪ disabled (REPO_PATH_MAP 为空或路径不存在)'}`,
+      );
+      console.log('═══════════════════════════════════════════════════════════');
+      resolve();
+    });
+    httpServerRef = s;
+  });
+}
+
+let httpServerRef: ReturnType<typeof app.listen> | null = null;
+void startServer();
 
 process.on('SIGTERM', () => {
   console.log('SIGTERM, shutting down...');
-  httpServer.close();
+  httpServerRef?.close();
   previewMgr.dispose();
 });
 process.on('SIGINT', () => {
   console.log('SIGINT, shutting down...');
-  httpServer.close();
+  httpServerRef?.close();
   previewMgr.dispose();
   process.exit(0);
 });

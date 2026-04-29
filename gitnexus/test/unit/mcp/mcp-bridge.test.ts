@@ -17,6 +17,7 @@ import {
   blastRadius,
   pingEvalServer,
 } from '../../../scripts/mcp-bridge.js';
+import { violatesSafetyPolicy } from '../../../scripts/patch-runner.js';
 
 interface MockCall {
   url: string;
@@ -265,6 +266,74 @@ describe('blastRadius', () => {
     const r = await blastRadius({ name: 'isolated', repo: 'r' }, f);
     expect(r.strategy).toBe('none');
     expect(r.total).toBe(0);
+  });
+});
+
+describe('violatesSafetyPolicy (R-14 黑名单, single-repo/v1.0.1 H-1 修加宽)', () => {
+  it('放行普通业务源码', () => {
+    expect(violatesSafetyPolicy('server/src/main/java/com/foo/Bar.java')).toBeNull();
+    expect(violatesSafetyPolicy('src/test/java/com/foo/BarTest.java')).toBeNull();
+    expect(violatesSafetyPolicy('.gitnexus/reports/auto-pr-issue-22.md')).toBeNull();
+  });
+
+  it('R-14.1 拦 .github 整个目录 (不只 workflows)', () => {
+    expect(violatesSafetyPolicy('.github/workflows/ci.yml')).toMatch(/R-14\.1/);
+    expect(violatesSafetyPolicy('.github/CODEOWNERS')).toMatch(/R-14\.1/);
+    expect(violatesSafetyPolicy('.github/dependabot.yml')).toMatch(/R-14\.1/);
+    expect(violatesSafetyPolicy('CODEOWNERS')).toMatch(/R-14\.1/);
+    expect(violatesSafetyPolicy('.gitlab-ci.yml')).toMatch(/R-14\.1/);
+  });
+
+  it('R-14.2 拦 .env / 凭证扩展 / npmrc / Spring application.properties', () => {
+    expect(violatesSafetyPolicy('.env')).toMatch(/R-14\.2/);
+    expect(violatesSafetyPolicy('config/.env.production')).toMatch(/R-14\.2/);
+    expect(violatesSafetyPolicy('certs/server.pem')).toMatch(/R-14\.2/);
+    expect(violatesSafetyPolicy('foo.p12')).toMatch(/R-14\.2/);
+    expect(violatesSafetyPolicy('foo.jks')).toMatch(/R-14\.2/);
+    expect(violatesSafetyPolicy('.npmrc')).toMatch(/R-14\.2/);
+    expect(violatesSafetyPolicy('id_rsa')).toMatch(/R-14\.2/);
+    expect(violatesSafetyPolicy('server/src/main/resources/application.properties')).toMatch(/R-14\.2/);
+    expect(violatesSafetyPolicy('server/src/main/resources/application-prod.yml')).toMatch(/R-14\.2/);
+    expect(violatesSafetyPolicy('secrets/api-key')).toMatch(/R-14\.2/);
+  });
+
+  it('R-14.3 拦各语言依赖清单', () => {
+    expect(violatesSafetyPolicy('package.json')).toMatch(/R-14\.3/);
+    expect(violatesSafetyPolicy('pnpm-lock.yaml')).toMatch(/R-14\.3/);
+    expect(violatesSafetyPolicy('pom.xml')).toMatch(/R-14\.3/);
+    expect(violatesSafetyPolicy('build.gradle.kts')).toMatch(/R-14\.3/);
+    expect(violatesSafetyPolicy('gradle.properties')).toMatch(/R-14\.3/);
+    expect(violatesSafetyPolicy('go.sum')).toMatch(/R-14\.3/);
+    expect(violatesSafetyPolicy('Cargo.lock')).toMatch(/R-14\.3/);
+    expect(violatesSafetyPolicy('pyproject.toml')).toMatch(/R-14\.3/);
+    expect(violatesSafetyPolicy('Pipfile.lock')).toMatch(/R-14\.3/);
+  });
+
+  it('R-14.4 拦 docker-compose / Dockerfile / k8s / helm / terraform', () => {
+    expect(violatesSafetyPolicy('docker-compose.yml')).toMatch(/R-14\.4/);
+    expect(violatesSafetyPolicy('docker-compose.prod.yaml')).toMatch(/R-14\.4/);
+    expect(violatesSafetyPolicy('Dockerfile')).toMatch(/R-14\.4/);
+    expect(violatesSafetyPolicy('Dockerfile.prod')).toMatch(/R-14\.4/);
+    expect(violatesSafetyPolicy('k8s/prod-deployment.yaml')).toMatch(/R-14\.4/);
+    expect(violatesSafetyPolicy('helm/myapp/values.yaml')).toMatch(/R-14\.4/);
+    expect(violatesSafetyPolicy('charts/myapp/templates/deployment.yaml')).toMatch(/R-14\.4/);
+    expect(violatesSafetyPolicy('infra/main.tf')).toMatch(/R-14\.4/);
+    expect(violatesSafetyPolicy('terraform.tfvars')).toMatch(/R-14\.4/);
+    expect(violatesSafetyPolicy('Chart.yaml')).toMatch(/R-14\.4/);
+    expect(violatesSafetyPolicy('values-prod.yml')).toMatch(/R-14\.4/);
+  });
+
+  it('R-14.5 拦 CI 配置 (Jenkins/Travis/CircleCI/Drone/Azure)', () => {
+    expect(violatesSafetyPolicy('Jenkinsfile')).toMatch(/R-14\.5/);
+    expect(violatesSafetyPolicy('.drone.yml')).toMatch(/R-14\.5/);
+    expect(violatesSafetyPolicy('.travis.yml')).toMatch(/R-14\.5/);
+    expect(violatesSafetyPolicy('azure-pipelines.yml')).toMatch(/R-14\.5/);
+    expect(violatesSafetyPolicy('.circleci/config.yml')).toMatch(/R-14\.5/);
+  });
+
+  it('路径穿越拦 ..', () => {
+    expect(violatesSafetyPolicy('../etc/passwd')).toMatch(/path 含 \.\./);
+    expect(violatesSafetyPolicy('src/../../boom')).toMatch(/path 含 \.\./);
   });
 });
 

@@ -17,7 +17,7 @@
 
 import { runClaudeCli, summarizeEvent, type ClaudeStreamEvent } from './claude-cli-client.js';
 
-const PATCH_SYSTEM_PROMPT = `
+export const PATCH_SYSTEM_PROMPT = `
 你是 GitNexus Agentic DevOps 闭环的 patch-and-test agent.
 你拿到一份"线上 trace 报错 + 受影响文件清单 + (可选)嫌疑 commit", 任务是给出**最小化代码补丁** + **真复现 bug 的测试** (含真断言, 不是 TODO 占位).
 
@@ -238,19 +238,66 @@ export async function runPatch(input: RunPatchInput): Promise<RunPatchOutput> {
   };
 }
 
-/** R-14 安全 gate — caller 在 push 前必查, 任何违反 → 拒绝. */
+/**
+ * R-14 安全 gate — caller 在 push 前必查, 任何违反 → 整体 abort.
+ *
+ * 多仓接入前必须把所有可能持有"运行时配置 / 凭证 / 部署 manifest / 仓库治理"的路径堵死.
+ * 单仓 cses-java 没这些文件, 但路线图说"扩多仓只是配置层", 所以这里要写在前面.
+ */
 export function violatesSafetyPolicy(path: string): string | null {
+  // 路径穿越
   if (path.includes('..')) return 'path 含 ..';
-  if (path.startsWith('.github/workflows/')) return 'R-14.1 不允许 .github/workflows/';
+
+  // R-14.1 仓库治理 — 整个 .github 都不让动 (workflows + CODEOWNERS + ci-config 等)
+  if (path.startsWith('.github/')) return 'R-14.1 不允许 .github/**';
+  if (path.startsWith('.gitlab/') || path === '.gitlab-ci.yml') return 'R-14.1 不允许 .gitlab-ci/CODEOWNERS';
+  if (path === 'CODEOWNERS' || path.endsWith('/CODEOWNERS')) return 'R-14.1 不允许 CODEOWNERS';
+
+  // R-14.2 凭证/环境变量
   if (path.startsWith('.env') || path.includes('/.env') || /\.env(\.|$)/.test(path))
     return 'R-14.2 不允许 .env*';
-  if (/\.(pem|key)$/.test(path)) return 'R-14.2 不允许 .pem/.key';
+  if (/\.(pem|key|p12|pfx|jks|keystore|crt|cer)$/.test(path)) return 'R-14.2 不允许凭证扩展名';
   if (path.startsWith('secrets/') || path.includes('/secrets/')) return 'R-14.2 不允许 secrets/';
+  const base = path.split('/').pop() ?? '';
+  if (/^\.npmrc$|^\.pypirc$|^\.netrc$|^id_rsa$|^id_ed25519$/.test(base))
+    return 'R-14.2 不允许 registry/npmrc/ssh 私钥';
+  // application.properties / application.yml / application-*.yml — Spring 常放 DB/Redis/凭证
+  if (/^application(-[\w-]+)?\.(properties|ya?ml)$/.test(base))
+    return 'R-14.2 不允许 application.properties / application*.y(a)ml';
+
+  // R-14.3 不引入新依赖
   if (
-    /^(package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|pom\.xml|build\.gradle|build\.gradle\.kts|requirements\.txt|go\.mod|go\.sum|Cargo\.toml|Cargo\.lock)$/.test(
-      path.split('/').pop() ?? '',
+    /^(package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|pom\.xml|build\.gradle|build\.gradle\.kts|gradle\.properties|gradle-wrapper\.properties|requirements\.txt|requirements-.*\.txt|Pipfile|Pipfile\.lock|pyproject\.toml|poetry\.lock|go\.mod|go\.sum|Cargo\.toml|Cargo\.lock|Gemfile|Gemfile\.lock|composer\.json|composer\.lock|mix\.exs|deno\.json|deno\.jsonc|bun\.lockb)$/.test(
+      base,
     )
   )
-    return 'R-14.3 不允许引入新依赖';
+    return 'R-14.3 不允许引入/改动依赖清单';
+
+  // R-14.4 部署 manifest / IaC — 单条业务 patch 不该动这些
+  if (/^docker-compose(\..*)?\.ya?ml$/.test(base)) return 'R-14.4 不允许 docker-compose*.yml';
+  if (base === 'Dockerfile' || /^Dockerfile\.[\w.-]+$/.test(base) || path.endsWith('/Dockerfile'))
+    return 'R-14.4 不允许 Dockerfile';
+  if (/\.tf(vars)?$/.test(base) || /\.hcl$/.test(base)) return 'R-14.4 不允许 terraform/hcl';
+  // K8s / helm / argo / kustomize 常见根目录
+  if (
+    /^(k8s|kubernetes|helm|charts|argocd|kustomize|deploy|deployment|manifests)\//.test(path) ||
+    path.startsWith('infra/') ||
+    path.startsWith('infrastructure/')
+  )
+    return 'R-14.4 不允许 k8s/helm/terraform/部署 manifest 目录';
+  if (/^Chart\.ya?ml$|^values(-[\w-]+)?\.ya?ml$/.test(base)) return 'R-14.4 不允许 Helm Chart/values';
+
+  // R-14.5 CI 系统 (GitHub Actions / GitLab CI / Jenkins / CircleCI / Drone)
+  if (
+    base === 'Jenkinsfile' ||
+    /^Jenkinsfile\.[\w.-]+$/.test(base) ||
+    base === '.drone.yml' ||
+    base === '.travis.yml' ||
+    base === 'azure-pipelines.yml' ||
+    base === '.circleci' ||
+    path.startsWith('.circleci/')
+  )
+    return 'R-14.5 不允许 CI 配置 (Jenkins/Travis/CircleCI/Drone/Azure)';
+
   return null;
 }
