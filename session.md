@@ -424,6 +424,10 @@ Agentic-Devops 仓 (镜像, 非 git): /Users/mac28/workspace/ai-workspace/Agenti
 ✅ single-repo/v1.0.2  P1 reindex 真接 + M-2/M-3/L-3 polish + 跨仓 roadmap 文档
 ✅ single-repo/v1.0.3  issue 评论 S4 表格渲染对齐 (两套 renderer 都修)
 ─────────────────────────────────────────
+✅ cross-repo/v1.0.0   跨仓 ContractLink + 多仓 LLM context + S7 多 PR (D-1~D-6 + D-9 落地)
+✅ D-7 P1 group reindex 自动化 (commit 2b7ffff7 + eeead2c8 fix)
+🟡 D-4/D-8 多 service preview + LIVE 闸严格化 → docs/backlog/cross-repo-v1.1-multi-service-preview.md
+─────────────────────────────────────────
 真实 e2e 验证 (3 次 tag):
   · e2e/v0.1.0-yundiz       git.yundiz.com 单次真 MR (issue #2/#3)
   · e2e/v0.2.0-overnight    隔夜 13 维度 100% 通过 (issue #4-#6)
@@ -475,7 +479,29 @@ mvp/v1.3.0-llm-patch    claude-cli stream-json + R-14 system prompt + Structured
 single-repo/v1.0.0      ⭐ 单仓 Agentic DevOps 闭环达成
 single-repo/v1.0.1      ⭐ 5 项 review 整改 (dryRun 三因子 / R-14 黑名单 / LLM 并发 / S4 真 / 删死)
 single-repo/v1.0.2      ⭐ P1 reindex + M-2/M-3/L-3 polish + 跨仓 roadmap
-single-repo/v1.0.3      ⭐ issue/MR 双 renderer S4 渲染对齐 (本次最终)
+single-repo/v1.0.3      ⭐ issue/MR 双 renderer S4 渲染对齐
+single-repo/v1.0.4      ⭐ 单仓收尾 (本次基线)
+
+cross-repo/v1.0.0       ⭐⭐ 跨仓 ContractLink + 多仓 LLM context + S7 多 PR
+                         · D-1 DIY bridge (lbug 替代版, cypher 启发式) ✓
+                         · D-2 S3 跨仓 BFS (cross_depth=1) ✓
+                         · D-3 S4 跨仓 forensics (partner git log) ✓
+                         · D-4 S6 单 service preview (多 service 留 v1.1) ✓
+                         · D-5 S7 多 PR 联动 ✓
+                         · D-6 LLM 多仓 context (--add-dir + R-14.7) ✓
+                         · D-9 多仓 token / clone 配置 ✓
+                         5 次 e2e: issue#26-30, MR!31-34
+                         · #29 → !33  ⭐ MVP — LLM 真改 createPosts 返 void 对齐 mattermost
+                         · #30 → !34  ⭐ 单仓回归 PASS, 0 cross-link 干净退化
+                         (commit ac9b771f)
+
+post-v1.0.0:
+  · D-7 P1 group reindex 自动化 (commit 2b7ffff7 + fix eeead2c8)
+                         e2e 验证: cses-java push → P1 reindex 19s →
+                         group rebuild spawn mattermost reindex 715ms ✓
+  · D-8 backlog: docs/backlog/cross-repo-v1.1-multi-service-preview.md (commit 98b6eaf7)
+
+🟡 task #14 future: lbug 新版 (darwin-x64 prebuilt) 发布后切回原生 group sync
 ```
 
 ### 19. 单仓闭环最终成果 (single-repo/v1.0.3, 2026-04-29)
@@ -676,11 +702,24 @@ npx tsx scripts/start-webhook-server.ts
 
 ---
 
-## 16. 给新会话的开场白（粘贴用 — 跨仓接力版, 2026-04-29 起）
+## 16. 给新会话的开场白（粘贴用 — cross-repo/v1.0.0 后, 2026-04-29 起）
 
 复制粘贴这段给新会话开第一句（10 分钟读完上下文）：
 
-> 我接力上一个会话，做**跨仓 Agentic DevOps**（cross-repo/v1.0.0）。
+> 我接力上一个会话，做**跨仓 Agentic DevOps v1.1**（cross-repo/v1.1.x，多 service preview + 严格 LIVE 闸）。
+>
+> **cross-repo/v1.0.0 已稳**：tag 落地，5 次真跑（issue#26~#30 → MR!31~!34），D-1~D-6+D-9 全实现，D-7 P1 group reindex 已 e2e 验证（cses-java push → mattermost 自动 reindex 715ms）。
+>
+> **必读**:
+> 1. [`/CLAUDE.md`](CLAUDE.md) §⚓ 主航道 — 守轨规则
+> 2. [`docs/learn/跨仓-Agentic-DevOps-闭环-真跑通-SOP.md`](docs/learn/跨仓-Agentic-DevOps-闭环-真跑通-SOP.md) — 跨仓 v1.0.0 SOP 9 节
+> 3. [`docs/backlog/cross-repo-v1.1-multi-service-preview.md`](docs/backlog/cross-repo-v1.1-multi-service-preview.md) — v1.1 计划
+>
+> **下一步候选**：D-4/D-8（K8s 多 service preview + 严格 LIVE 闸）/ lbug 切原生（task #14）/ GitHub 平台跨仓回归 / 真发场景找一个跨仓 partner MR 触发的 trace.
+
+— 老接力清单（cross-repo/v1.0.0 之前）保留如下供历史参考：
+
+> 我接力上一个会话，做**跨仓 Agentic DevOps**（cross-repo/v1.0.0）— **此版本已落地, 见上**。
 >
 > **单仓闭环已稳**：`single-repo/v1.0.3` tag 落地，5 次真跑（issue#21~#25 → MR!25~!30），LLM 真改 Java 代码 + 真断言，每次 ~$1.1 / 4 分钟。最后一次 issue#25 → MR!30 ([URL](http://git.yundiz.com/cses/java/cses/cses/-/merge_requests/30))。
 >
