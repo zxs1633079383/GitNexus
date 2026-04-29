@@ -444,8 +444,40 @@ pipeline/v0.3.0         issue.opened webhook 真闭环
 e2e/v0.1.0-yundiz       真 git.yundiz.com 单次验证
 e2e/v0.2.0-overnight    隔夜 13 维度
 e2e/v0.3.0-real-jaeger  真 Jaeger 端到端
+e2e/v0.4.0-live-bridge  完整 7 阶段 LIVE 闭环 (S2-S7 全绿) — issue#18 → MR!24
 
 mvp/v1.2.0-bridge       eval-server HTTP 桥接, S2/S3 真索引数据
+mvp/v1.2.0-bridge.1     CLI 主路径 + cypher fallback + 多仓 token map
+```
+
+### 18.5 LIVE bridge e2e (2026-04-29 落地, e2e/v0.4.0-live-bridge)
+
+**触发**：cses/java/cses/cses 仓 issue#18 含 `gitnexus:auto-pr-live` label + `serviceImage=nginx:alpine` + `testCommand` 输出固定 PASS JUnit。
+
+**全 7 阶段实跑结果**：
+
+| Stage | Status | Duration | 真产物 |
+|---|---|---|---|
+| S2 resolve | ✅ ok | 663ms | `Method:server/.../TaskMemberReader.java:loadSnapshot:93` |
+| S3 blast | ✅ ok | 791ms | 40 真业务文件 (ViewReader/WorkItemReader/TaskCreateCmdHandler …) |
+| S4 forensics | ✅ ok (空) | 0ms | bridge 已通, 仓盘 git log 接入留 backlog |
+| S5 testgen | ✅ ok | 0ms | scaffold `Test_loadSnapshot.java` |
+| S6 preview | ✅ pass=1 fail=0 | 9004ms | ns `gitnexus-preview-fe54c1` (TTL 30min, 自动 GC) |
+| S7 auto-pr | ✅ MR opened | 2483ms | [!24](http://git.yundiz.com/cses/java/cses/cses/-/merge_requests/24) — 推了 .gitnexus/reports/auto-pr-issue-18.md + Test_loadSnapshot.java |
+
+**关键证据** — MR !24 的 diff 真有 `.gitnexus/reports/auto-pr-issue-18.md`，里面全部是真 cses-java 业务文件路径，没有任何 mock。`cses-server-pre` 等生产 pods 没动（AGE 不变），preview ns 自动 teardown。
+
+**重启命令** (LIVE 模式 + 多仓 token):
+
+```bash
+GITNEXUS_GITLAB_SECRET='cd05ce77556a47bbc26a6fad307bcf12b90564a7c20f28f8' \
+GITNEXUS_AUTOPR_TOKEN_MAP='{"cses/java/cses/cses":"glpat-Fb2DYtGYDWZe2FG245KZ","cses/go/mattermost":"glpat-pk29rffrzn_nxZgC6DkK"}' \
+GITNEXUS_BRIDGE_REPO_MAP='{"cses/java/cses/cses":"cses-java","cses/go/mattermost":"mattermost"}' \
+GITNEXUS_AUTOPR_LIVE=1 GITNEXUS_PROVIDER=gitlab \
+GITLAB_API_BASE=http://git.yundiz.com/api/v4 \
+JAEGER_QUERY_BASE=http://192.168.6.66:32281 \
+PORT=3034 \
+nohup npx tsx scripts/start-webhook-server.ts > /tmp/gnx-server.log 2>&1 &
 ```
 
 未 push 到 remote。push 时机由用户决定。
