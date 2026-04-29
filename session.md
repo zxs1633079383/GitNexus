@@ -387,7 +387,7 @@ Agentic-Devops 仓 (镜像, 非 git): /Users/mac28/workspace/ai-workspace/Agenti
 - [ ] 读 [`docs/learn/跨仓-Agentic-DevOps-roadmap.md`](docs/learn/跨仓-Agentic-DevOps-roadmap.md) **必读**（§1 单仓 vs 跨仓 7 维度对比 + §2 9 个缺口 D-1..D-9）
 - [ ] 跳读 [`docs/learn/单仓-Agentic-DevOps-闭环-真跑通-SOP.md`](docs/learn/单仓-Agentic-DevOps-闭环-真跑通-SOP.md) §6（每段对应源码位置, 跨仓改要看哪些点）
 - [ ] 看 §19（单仓最终成果速查）
-- [ ] 确认当前分支：`feat/jaeger-span-normalizer`（保留），跨仓开新分支 `feat/cross-repo-bridge`
+- [ ] 确认当前分支：`feat/agentic-devops-cross-repo`（cross-repo/v1.0.0 + D-7 已落地, 历史叫 `feat/jaeger-span-normalizer`）
 - [ ] 确认 server / eval-server 都活：`curl :3034/health` + `curl :4848/health`
   - eval-server 18+ 仓含 cses-java / mattermost / clawlive / clawlive-api
   - webhook server PID `cat /tmp/gnx-server.pid` 跑 v1.0.3
