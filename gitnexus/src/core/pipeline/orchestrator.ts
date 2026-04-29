@@ -550,12 +550,22 @@ function buildAutoPRReportFile(args: {
     const suspects = Array.isArray(o.suspects) ? o.suspects : [];
     if (suspects.length === 0) L.push('_无嫌疑 commit_' + (o.note ? ` (${o.note})` : ''));
     else {
-      L.push('| commit | confidence | symbol | 多久前 |');
-      L.push('|---|---|---|---|');
+      // 兼容两种 suspect 形态:
+      //  · v1.0.2 真 git log 形态: { hash, subject, author, date }
+      //  · 旧 mock 形态: { commitHash, confidence, symbolUid, timeAgoSec }
+      L.push('| commit | subject / symbol | author / 多久前 |');
+      L.push('|---|---|---|');
       for (const s of suspects.slice(0, 10)) {
-        const time = s.timeAgoSec ? `${(s.timeAgoSec / 3600).toFixed(1)}h` : '?';
-        L.push(`| \`${(s.commitHash ?? '?').slice(0, 8)}\` | ${(s.confidence ?? 0).toFixed(2)} | \`${s.symbolUid ?? '?'}\` | ${time} |`);
+        const hash = s.hash ?? s.commitHash ?? '?';
+        const subject = s.subject ?? s.symbolUid ?? '?';
+        const author = s.author ?? (s.confidence ? `(conf ${(s.confidence ?? 0).toFixed(2)})` : '?');
+        const when = s.date ?? (s.timeAgoSec ? `${(s.timeAgoSec / 3600).toFixed(1)}h ago` : '?');
+        L.push(
+          `| \`${String(hash).slice(0, 8)}\` | ${String(subject).slice(0, 80).replace(/\|/g, '\\|')} | ${author} · ${when} |`,
+        );
       }
+      if (o.handlerFile) L.push(`> _git log -- ${o.handlerFile}_`);
+      if (o.note) L.push(`> _${o.note}_`);
     }
   }
   L.push('');

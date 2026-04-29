@@ -13,7 +13,9 @@ import { spawn } from 'node:child_process';
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? 'claude';
 const DEFAULT_TIMEOUT_MS = Number(process.env.CLAUDE_CLI_TIMEOUT_MS ?? 600_000);
-const DEFAULT_MAX_BUDGET = process.env.CLAUDE_CLI_MAX_BUDGET_USD; // 不设默认, 由 caller 决定
+// M-3 修: 必须给非空默认, 防 caller 漏传 → claude CLI 完全不限预算 → 单次失控烧光
+// 默认 2 USD 是经验值 (issue#22 实际 ~$1.4, 留 40% headroom).
+const DEFAULT_MAX_BUDGET_USD = Number(process.env.CLAUDE_CLI_MAX_BUDGET_USD ?? 2.0);
 
 export interface ClaudeStreamEvent {
   type: string;
@@ -98,8 +100,9 @@ export async function runClaudeCli(req: ClaudeRunRequest): Promise<ClaudeRunResu
     args.push('--allowedTools', ...req.allowedTools);
   }
   for (const d of req.addDirs ?? []) args.push('--add-dir', d);
-  const budget = req.maxBudgetUsd ?? (DEFAULT_MAX_BUDGET ? Number(DEFAULT_MAX_BUDGET) : undefined);
-  if (budget !== undefined) args.push('--max-budget-usd', String(budget));
+  // M-3 修: 永远传 --max-budget-usd, 不让 claude CLI 走"无限预算"
+  const budget = req.maxBudgetUsd ?? DEFAULT_MAX_BUDGET_USD;
+  args.push('--max-budget-usd', String(budget));
   if (req.jsonSchema) {
     args.push('--json-schema', JSON.stringify(req.jsonSchema));
   }

@@ -250,19 +250,40 @@ export async function gitnexusImpactCLI(opts: {
     child.stderr?.on('data', (b: Buffer) => {
       stderr += b.toString('utf-8');
     });
-    child.on('close', () => {
+    child.on('close', (code) => {
       const trimmed = stdout.trim();
-      if (!trimmed) return settle(null);
+      // M-2 修: stderr 不再静默丢. impactedCount=0 / parse 失败时让 caller 看到诊断信息.
+      if (!trimmed) {
+        if (stderr.trim()) {
+          console.warn(
+            `[bridge.gitnexusImpactCLI] empty stdout, exit=${code}, stderr: ${stderr.trim().slice(0, 500)}`,
+          );
+        }
+        return settle(null);
+      }
       try {
         const parsed = JSON.parse(trimmed) as GitnexusImpactJson;
+        // 工具自身报 error / impactedCount=0 时把 stderr 也透一遍, 排查时不用重跑
+        if ((parsed.error || (parsed.impactedCount ?? 0) === 0) && stderr.trim()) {
+          console.warn(
+            `[bridge.gitnexusImpactCLI] result.error=${parsed.error ?? 'none'} impactedCount=${parsed.impactedCount ?? 0}; stderr: ${stderr.trim().slice(0, 300)}`,
+          );
+        }
         settle(parsed);
-      } catch {
+      } catch (e) {
+        console.warn(
+          `[bridge.gitnexusImpactCLI] parse failed: ${(e as Error).message}; stdout head: ${trimmed.slice(0, 200)}; stderr: ${stderr.trim().slice(0, 200)}`,
+        );
         settle(null);
       }
     });
-    child.on('error', () => settle(null));
+    child.on('error', (e) => {
+      console.warn(`[bridge.gitnexusImpactCLI] spawn error: ${e.message}`);
+      settle(null);
+    });
     setTimeout(() => {
       if (!settled) {
+        console.warn(`[bridge.gitnexusImpactCLI] timeout after ${IMPACT_TIMEOUT_MS}ms; killing`);
         try {
           child.kill('SIGKILL');
         } catch {
@@ -271,8 +292,6 @@ export async function gitnexusImpactCLI(opts: {
         settle(null);
       }
     }, IMPACT_TIMEOUT_MS).unref?.();
-    // hint stderr for diagnosability without polluting stdout
-    void stderr;
   });
 }
 

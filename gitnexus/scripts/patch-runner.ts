@@ -104,6 +104,8 @@ export interface RunPatchInput {
   issueRef?: string;
   /** 总预算上限 (USD), 默认 1.0. */
   maxBudgetUsd?: number;
+  /** L-3 修: claude CLI 总超时 (ms), 默认走 CLAUDE_CLI_TIMEOUT_MS env 或 600s. */
+  timeoutMs?: number;
   /** 流事件回调 (一般传 console.log 包装). */
   onProgress?: (line: string) => void;
 }
@@ -170,7 +172,8 @@ export async function runPatch(input: RunPatchInput): Promise<RunPatchOutput> {
     addDirs: [input.repoPath],
     allowedTools: ['Read', 'Glob', 'Grep', 'Bash(git diff:*)', 'Bash(git log:*)', 'Bash(git show:*)'],
     maxBudgetUsd: input.maxBudgetUsd ?? 1.0,
-    timeoutMs: 600_000,
+    // L-3 修: timeoutMs 可由 caller 覆盖, 否则走 claude-cli-client 的 DEFAULT_TIMEOUT_MS (env or 600s)
+    timeoutMs: input.timeoutMs,
     jsonSchema: PATCH_JSON_SCHEMA,
     onEvent,
   });

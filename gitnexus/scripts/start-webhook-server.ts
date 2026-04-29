@@ -49,9 +49,11 @@ import {
   parseMethodId,
 } from './mcp-bridge.js';
 import { runPatch, violatesSafetyPolicy } from './patch-runner.js';
-import { execFile as execFileCb } from 'node:child_process';
+import { execFile as execFileCb, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { checkStaleness } from '../src/core/git-staleness.js';
 import type { OrchestratorDeps } from '../src/core/pipeline/types.js';
 
 const execFile = promisify(execFileCb);
@@ -149,6 +151,97 @@ function splitClassMethod(cm: string | undefined): { method?: string; cls?: stri
   const idx = cm.lastIndexOf('.');
   if (idx <= 0) return { method: cm };
   return { cls: cm.slice(0, idx), method: cm.slice(idx + 1) };
+}
+
+// ─── P1 Auto-reindex Webhook (push 事件) ─────────────────────────────
+// 每 repo 单 slot dedup; 检 staleness 早退避免空跑.
+// 读 <repoPath>/.gitnexus/meta.json 拿当前索引 commit, 跟 HEAD 比.
+// stale → spawn `gitnexus analyze --path <repoPath>` 重建; 不阻塞 webhook 响应.
+
+interface ReindexJob {
+  jobId: string;
+  startedAt: number;
+  status: 'queued' | 'running' | 'done' | 'failed';
+  commitsBehind?: number;
+  error?: string;
+}
+const reindexJobs = new Map<string, ReindexJob>();
+
+function readIndexedCommit(repoPath: string): string {
+  try {
+    const meta = JSON.parse(readFileSync(`${repoPath}/.gitnexus/meta.json`, 'utf8'));
+    return typeof meta.lastCommit === 'string' ? meta.lastCommit : '';
+  } catch {
+    return '';
+  }
+}
+
+async function p1Reindex(opts: {
+  fullName: string;
+  repoPath: string;
+}): Promise<{ jobId: string; status: string; reason?: string }> {
+  const { fullName, repoPath } = opts;
+  // dedup 同 repo
+  const existing = reindexJobs.get(fullName);
+  if (existing && (existing.status === 'queued' || existing.status === 'running')) {
+    return { jobId: existing.jobId, status: existing.status, reason: 'dedup' };
+  }
+  // git fetch + ff-pull (让本地 clone 跟上, LLM 后面要读最新源码)
+  try {
+    await execFile('git', ['-C', repoPath, 'fetch', '--quiet', 'origin'], { timeout: 60_000 });
+    await execFile('git', ['-C', repoPath, 'pull', '--quiet', '--ff-only'], { timeout: 60_000 });
+  } catch (e) {
+    console.warn(`  → P1 git pull warn (${fullName}): ${(e as Error).message}; 继续走 staleness 检查`);
+  }
+  const indexed = readIndexedCommit(repoPath);
+  if (!indexed) {
+    return { jobId: 'noop', status: 'ignored', reason: 'meta.json 缺/坏 — 跑 gitnexus analyze 一次先' };
+  }
+  const stale = checkStaleness(repoPath, indexed);
+  if (!stale.isStale) {
+    return { jobId: 'noop', status: 'fresh', reason: '0 commits behind' };
+  }
+  const jobId = randomUUID();
+  const startedAt = Date.now();
+  reindexJobs.set(fullName, {
+    jobId,
+    startedAt,
+    status: 'running',
+    commitsBehind: stale.commitsBehind,
+  });
+  console.log(
+    `  → P1 reindex start: jobId=${jobId.slice(0, 8)} repo=${fullName} path=${repoPath} ${stale.commitsBehind} commits behind`,
+  );
+  // detached: false 让 server 退出时一起干掉; stdio pipe 收 stderr 用于诊断
+  const child = spawn('gitnexus', ['analyze', '--path', repoPath], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stderrTail = '';
+  child.stdout?.on('data', () => { /* drain */ });
+  child.stderr?.on('data', (b: Buffer) => {
+    stderrTail = (stderrTail + b.toString('utf-8')).slice(-2000);
+  });
+  child.on('close', (code) => {
+    const dur = Date.now() - startedAt;
+    if (code === 0) {
+      reindexJobs.set(fullName, { jobId, startedAt, status: 'done', commitsBehind: stale.commitsBehind });
+      console.log(`  ← P1 reindex done: ${fullName} ${stale.commitsBehind} commits, dur=${dur}ms`);
+    } else {
+      reindexJobs.set(fullName, {
+        jobId,
+        startedAt,
+        status: 'failed',
+        commitsBehind: stale.commitsBehind,
+        error: `exit ${code}; stderr tail: ${stderrTail.slice(-300)}`,
+      });
+      console.error(`  ✗ P1 reindex failed: ${fullName} exit=${code} stderr=${stderrTail.slice(-500)}`);
+    }
+  });
+  child.on('error', (e) => {
+    reindexJobs.set(fullName, { jobId, startedAt, status: 'failed', error: e.message });
+    console.error(`  ✗ P1 reindex spawn error: ${e.message}`);
+  });
+  return { jobId, status: 'queued', reason: `${stale.commitsBehind} commits behind` };
 }
 
 /**
@@ -527,7 +620,19 @@ app.get('/health', (_req, res) =>
 
 mountWebhookRoutes(app, {
   gitlabSecret: SECRET,
-  trigger: async () => ({ jobId: 'noop', status: 'ignored' }),
+  // P1 Auto-reindex (push 事件): git pull + staleness 检查 + 异步 spawn gitnexus analyze
+  trigger: async (event) => {
+    if (event.kind !== 'push') {
+      return { jobId: 'noop', status: 'ignored', reason: `kind=${event.kind} not push` };
+    }
+    const repoPath = REPO_PATH_MAP[event.fullName];
+    if (!repoPath || !existsSync(repoPath)) {
+      console.log(`[push] ${event.fullName} → skip (REPO_PATH_MAP 未配)`);
+      return { jobId: 'noop', status: 'ignored', reason: 'no REPO_PATH_MAP entry' };
+    }
+    console.log(`[push] ${event.fullName} headSha=${(event.headSha ?? '').slice(0, 12)} ref=${event.ref ?? '?'}`);
+    return await p1Reindex({ fullName: event.fullName, repoPath });
+  },
   issueTrigger: async (event) => {
     console.log(
       `[issue] ${event.fullName} #${event.issueNumber} labels=${(event.issueLabels ?? []).join(',')}`,
