@@ -9,6 +9,7 @@ export interface ValidateInPreviewParams {
   service_image?: unknown;
   service_name?: unknown;
   service_port?: unknown;
+  service_command?: unknown;
   test_image?: unknown;
   test_command?: unknown;
   ttl_seconds?: unknown;
@@ -41,6 +42,7 @@ export function validateInPreview(
     serviceImage: params.service_image as string,
     serviceName: params.service_name as string,
     servicePort: params.service_port as number | undefined,
+    serviceCommand: params.service_command as string[] | undefined,
     testImage: params.test_image as string,
     testCommand: cmd as string[],
     junitOutputPath: params.junit_output_path as string | undefined,

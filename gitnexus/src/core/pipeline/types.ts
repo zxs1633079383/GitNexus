@@ -37,6 +37,8 @@ export interface StageResult<T> {
 export interface S6PreviewInput {
   /** 候选 fix 的服务镜像（已确认可拉的 tag） */
   serviceImage: string;
+  /** 可选: 覆盖 deployment 容器 command (busybox 等需要 sleep 持续 ready) */
+  serviceCommand?: string[];
   /** 测试 runner 镜像；省略则与 serviceImage 一致 */
   testImage?: string;
   /** 测试启动命令；推荐 sh -c 输出 ===JUNIT-XML=== marker */

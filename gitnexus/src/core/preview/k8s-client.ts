@@ -170,6 +170,8 @@ export interface SpinUpServiceOpts {
   serviceName: string;
   serviceImage: string;
   servicePort?: number;
+  /** 可选：deployment 容器启动命令；省略则用镜像默认 entrypoint */
+  serviceCommand?: string[];
   /** Pod readiness 等待最长时间（秒） */
   readyTimeoutSec?: number;
 }
@@ -195,7 +197,7 @@ spec:
       containers:
         - name: app
           image: ${opts.serviceImage}
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: IfNotPresent${opts.serviceCommand && opts.serviceCommand.length > 0 ? `\n          command: ${JSON.stringify(opts.serviceCommand)}` : ''}
 ---
 apiVersion: v1
 kind: Service

@@ -22,6 +22,7 @@ export class K8sPreviewDriver implements PreviewDriver {
       serviceName: job.spec.serviceName,
       serviceImage: job.spec.serviceImage,
       servicePort: job.spec.servicePort,
+      serviceCommand: (job.spec as any).serviceCommand,
       readyTimeoutSec: 120,
     });
   }

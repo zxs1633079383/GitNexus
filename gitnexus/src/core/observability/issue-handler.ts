@@ -95,90 +95,306 @@ export function buildPipelineInput(args: BuildPipelineInputArgs): PipelineInput 
       serviceImage: args.block.serviceImage,
       testImage: args.block.testImage,
       testCommand: args.block.testCommand,
+      ...((args.block as any).serviceCommand
+        ? { serviceCommand: (args.block as any).serviceCommand }
+        : {}),
     };
   }
   return input;
 }
 
-// ─── PipelineReport → issue comment markdown ───────────────────────────
+// ─── PipelineReport → issue comment markdown (产物详细版) ────────────
 
 export function renderReportToComment(
   report: PipelineReport,
   args: { issueNumber: number; traceUrl?: string },
 ): string {
-  const lines: string[] = [];
-  lines.push(`## GitNexus 7 阶段闭环报告 — issue #${args.issueNumber}`);
-  lines.push('');
-  if (args.traceUrl) lines.push(`- Trace: ${args.traceUrl}`);
-  lines.push(`- 总耗时: \`${report.totalDurationMs}ms\``);
-  lines.push(`- overall: **${report.overall}**`);
-  lines.push(`- handlers: \`${report.resolvedHandlerUids.length}\``);
-  lines.push('');
-  lines.push('| Stage | Status | Duration | Note |');
-  lines.push('|---|---|---|---|');
-  const stageRow = (
-    name: string,
-    status: string,
-    ms: number,
-    note?: string,
-  ) => `| ${name} | ${status} | ${ms}ms | ${note ?? ''} |`;
-  lines.push(
-    stageRow(
-      'S2 resolve',
-      report.s2_resolve.every((r) => r.status === 'ok')
-        ? 'ok'
-        : 'mixed',
-      report.s2_resolve.reduce((a, r) => a + r.durationMs, 0),
-      `${report.s2_resolve.length} spans`,
-    ),
+  const L: string[] = [];
+  L.push(`## 🤖 GitNexus 自动巡检报告 — issue #${args.issueNumber}`);
+  L.push('');
+  L.push('> 由 `/observe` → `webhook` → **Pipeline Orchestrator 7 阶段闭环** 自动生成');
+  if (args.traceUrl) L.push(`> Trace: <${args.traceUrl}>`);
+  L.push(
+    `> 输入 \`${report.inputSpanCount}\` spans → 解析 \`${report.resolvedHandlerUids.length}\` handlers · overall=**${report.overall}** · 总耗时 \`${report.totalDurationMs}ms\``,
   );
-  lines.push(
-    stageRow(
-      'S3 blast',
-      report.s3_blast.every((r) => r.status === 'ok')
-        ? 'ok'
-        : 'mixed',
-      report.s3_blast.reduce((a, r) => a + r.durationMs, 0),
-      '',
-    ),
+  L.push('');
+
+  // ─── 各阶段执行总览 ──────────────────────────────────
+  L.push('### 📋 各阶段执行总览');
+  L.push('');
+  L.push('| Stage | Status | Duration | 产物简述 |');
+  L.push('|---|---|---|---|');
+  const sumDur = (arr: readonly { durationMs: number }[]) =>
+    arr.reduce((a, r) => a + r.durationMs, 0);
+  const allOk = (arr: readonly { status: string }[]) =>
+    arr.every((r) => r.status === 'ok');
+  L.push(
+    `| S2 resolve | ${allOk(report.s2_resolve) ? '✅ ok' : '⚠️ mixed'} | ${sumDur(report.s2_resolve)}ms | ${report.s2_resolve.length} spans → ${report.resolvedHandlerUids.length} handlers |`,
   );
-  lines.push(stageRow('S4 forensics', report.s4_forensics.status, report.s4_forensics.durationMs));
-  lines.push(
-    stageRow(
-      'S5 testgen',
-      report.s5_testgen.every((r) => r.status === 'ok')
-        ? 'ok'
-        : 'mixed',
-      report.s5_testgen.reduce((a, r) => a + r.durationMs, 0),
-    ),
+  L.push(
+    `| S3 blast | ${allOk(report.s3_blast) ? '✅ ok' : '⚠️ mixed'} | ${sumDur(report.s3_blast)}ms | ${countBlastFiles(report)} 文件影响 / ${countBlastCross(report)} 跨仓边 |`,
   );
-  lines.push(
-    stageRow(
-      'S6 preview',
-      report.s6_preview.status,
-      report.s6_preview.durationMs,
-      report.s6_preview.output ? `pass=${report.s6_preview.output.pass}` : report.s6_preview.reason ?? '',
-    ),
+  L.push(
+    `| S4 forensics | ${report.s4_forensics.status === 'ok' ? '✅ ok' : '⚠️ ' + report.s4_forensics.status} | ${report.s4_forensics.durationMs}ms | ${countS4Suspects(report)} 条嫌疑 commit |`,
   );
-  lines.push(
-    stageRow(
-      'S7 auto-pr',
-      report.s7_autopr.status,
-      report.s7_autopr.durationMs,
-      report.s7_autopr.output?.pr
-        ? `[#${report.s7_autopr.output.pr.prNumber}](${report.s7_autopr.output.pr.url})`
-        : report.s7_autopr.reason ?? 'dryRun',
-    ),
+  L.push(
+    `| S5 testgen | ${allOk(report.s5_testgen) ? '✅ ok' : '⚠️ mixed'} | ${sumDur(report.s5_testgen)}ms | ${countS5Files(report)} 个测试脚手架 |`,
   );
-  lines.push('');
-  if (report.s7_autopr.output?.pr) {
-    lines.push(`✅ 自动 PR/MR 已开: ${report.s7_autopr.output.pr.url}`);
-  } else {
-    lines.push(
-      '_(S7 默认 dryRun；给 issue 加标签 `gitnexus:auto-pr-live` + 配 `GITNEXUS_AUTOPR_TOKEN` 后下次重开 issue 即真发)_',
-    );
+  L.push(
+    `| S6 preview | ${s6StatusIcon(report)} | ${report.s6_preview.durationMs}ms | ${s6Brief(report)} |`,
+  );
+  L.push(
+    `| S7 auto-pr | ${s7StatusIcon(report)} | ${report.s7_autopr.durationMs}ms | ${s7Brief(report)} |`,
+  );
+  L.push('');
+
+  // ─── S2 详情 ─────────────────────────────────────────
+  L.push('---');
+  L.push('### 🎯 S2 · Trace2Code Resolver');
+  L.push('');
+  L.push('每条 span 解析为 handler symbol UID:');
+  L.push('');
+  let s2Shown = 0;
+  for (const r of report.s2_resolve.slice(0, 10)) {
+    if (r.status !== 'ok' || !r.output) {
+      L.push(`- ❌ ${r.reason ?? r.status}`);
+      continue;
+    }
+    const o = r.output as any;
+    const uid = o.handler?.uid ?? '(unknown)';
+    const file = o.handler?.filePath ?? '';
+    const contract = o.contractId ?? o.handler?.name ?? '';
+    L.push(`- \`${contract}\` → \`${uid}\`${file ? ` _(${file})_` : ''}`);
+    s2Shown++;
   }
-  return lines.join('\n');
+  if (report.s2_resolve.length > s2Shown) {
+    L.push(`- _… 还有 ${report.s2_resolve.length - s2Shown} 条 spans 省略_`);
+  }
+  L.push('');
+
+  // ─── S3 详情 ─────────────────────────────────────────
+  L.push('---');
+  L.push('### 💥 S3 · Blast Radius (depth=2, crossDepth=1)');
+  L.push('');
+  if (report.s3_blast[0]?.status === 'skipped') {
+    L.push(`_skipped: ${report.s3_blast[0].reason ?? '(no handler)'}_`);
+  } else {
+    for (const r of report.s3_blast.slice(0, 5)) {
+      if (r.status !== 'ok' || !r.output) continue;
+      const o = r.output as any;
+      const uid = o.target_uid ?? '(unknown)';
+      const files: string[] = Array.isArray(o.files) ? o.files : [];
+      const cross: any[] = Array.isArray(o.cross) ? o.cross : [];
+      L.push(`**${uid}**`);
+      if (files.length > 0) {
+        L.push(`- 受影响文件 (${files.length}):`);
+        for (const f of files.slice(0, 8)) {
+          const fp = typeof f === 'string' ? f : (f as any).filePath ?? JSON.stringify(f);
+          L.push(`  - \`${fp}\``);
+        }
+        if (files.length > 8) L.push(`  - _… ${files.length - 8} more_`);
+      }
+      if (cross.length > 0) {
+        L.push(`- 跨仓影响 (${cross.length} 边):`);
+        for (const c of cross.slice(0, 5)) {
+          L.push(
+            `  - \`${(c as any).repo ?? '?'}\` → \`${(c as any).uid ?? '?'}\` (${(c as any).risk ?? '?'})`,
+          );
+        }
+      }
+      if ((o.note ?? '').length > 0) L.push(`- _注: ${o.note}_`);
+    }
+  }
+  L.push('');
+
+  // ─── S4 详情 ─────────────────────────────────────────
+  L.push('---');
+  L.push('### 🔬 S4 · Auto Regression Forensics');
+  L.push('');
+  if (report.s4_forensics.status !== 'ok' || !report.s4_forensics.output) {
+    L.push(`_status: ${report.s4_forensics.status}, ${report.s4_forensics.reason ?? ''}_`);
+  } else {
+    const o = report.s4_forensics.output as any;
+    const suspects: any[] = Array.isArray(o.suspects) ? o.suspects : [];
+    if (suspects.length === 0) {
+      L.push('_无嫌疑 commit_' + (o.note ? ` (${o.note})` : ''));
+    } else {
+      L.push('| commit | confidence | symbol | 多久前 |');
+      L.push('|---|---|---|---|');
+      for (const s of suspects.slice(0, 5)) {
+        const time = s.timeAgoSec ? `${(s.timeAgoSec / 3600).toFixed(1)}h` : '?';
+        L.push(
+          `| \`${(s.commitHash ?? '?').slice(0, 8)}\` | ${(s.confidence ?? 0).toFixed(2)} | \`${s.symbolUid ?? '?'}\` | ${time} |`,
+        );
+      }
+    }
+  }
+  L.push('');
+
+  // ─── S5 详情 ─────────────────────────────────────────
+  L.push('---');
+  L.push('### 🧪 S5 · E2E Test Generator (R-1 scaffold)');
+  L.push('');
+  if (report.s5_testgen[0]?.status === 'skipped') {
+    L.push(`_skipped: ${report.s5_testgen[0].reason ?? '(no handler)'}_`);
+  } else {
+    const allFiles: string[] = [];
+    for (const r of report.s5_testgen) {
+      if (r.status !== 'ok' || !r.output) continue;
+      const o = r.output as any;
+      const fs: any[] = Array.isArray(o.files) ? o.files : [];
+      for (const f of fs) {
+        const fp = typeof f === 'string' ? f : (f as any).path ?? '';
+        if (fp) allFiles.push(fp);
+      }
+    }
+    if (allFiles.length === 0) L.push('_无测试脚手架_');
+    else {
+      L.push(`生成 ${allFiles.length} 个脚手架 (unit + contract + integration):`);
+      for (const f of allFiles.slice(0, 12)) L.push(`- \`${f}\``);
+      if (allFiles.length > 12) L.push(`- _… ${allFiles.length - 12} more_`);
+    }
+  }
+  L.push('');
+
+  // ─── S6 详情 ─────────────────────────────────────────
+  L.push('---');
+  L.push('### 🚀 S6 · K8s Preview Env');
+  L.push('');
+  if (report.s6_preview.status === 'skipped') {
+    L.push(`_skipped: ${report.s6_preview.reason ?? '(no preview input)'}_`);
+  } else if (report.s6_preview.status === 'error') {
+    L.push(`_error: ${report.s6_preview.reason}_`);
+  } else if (report.s6_preview.output) {
+    const o = report.s6_preview.output;
+    L.push(`- jobId: \`${o.jobId}\``);
+    L.push(`- namespace: \`${o.ns}\` (TTL 30min, 自动 GC)`);
+    L.push(`- finalStatus: \`${o.finalStatus}\``);
+    L.push(`- pass: **${o.pass ? '✅ true' : '❌ false'}**`);
+    const tr = o.testResult as any;
+    if (tr) {
+      L.push(`- testResult source: \`${tr.source ?? 'unknown'}\``);
+      L.push(`- pass=${tr.passed ?? 0} / fail=${tr.failed ?? 0} / skip=${tr.skipped ?? 0} / exit=${tr.exitCode ?? '?'}`);
+      if (tr.junit?.failures?.length > 0) {
+        L.push(`- 失败用例 (${tr.junit.failures.length}):`);
+        for (const fl of tr.junit.failures.slice(0, 5)) {
+          L.push(`  - \`${fl.classname}.${fl.name}\`: ${fl.message?.slice(0, 100) ?? ''}`);
+        }
+      }
+      if ((tr.stdoutTail ?? '').length > 0) {
+        L.push('- stdout (tail):');
+        L.push('  ```');
+        L.push('  ' + (tr.stdoutTail ?? '').split('\n').slice(-5).join('\n  '));
+        L.push('  ```');
+      }
+    }
+  }
+  L.push('');
+
+  // ─── S7 详情 ─────────────────────────────────────────
+  L.push('---');
+  L.push('### 📤 S7 · Auto-PR/MR Creator');
+  L.push('');
+  if (report.s7_autopr.status === 'skipped') {
+    L.push(`_skipped: ${report.s7_autopr.reason ?? '(no prTarget)'}_`);
+  } else if (report.s7_autopr.output) {
+    const o = report.s7_autopr.output;
+    L.push(`- finalBranch: \`${o.finalBranch}\``);
+    if (o.rejectedReason) L.push(`- ❌ rejected: ${o.rejectedReason}`);
+    L.push('- stages 详情:');
+    for (const st of o.stages ?? []) {
+      const icon = st.status === 'ok' ? '✅' : st.status === 'skipped' ? '⚪' : st.status === 'rejected' ? '🚫' : '❌';
+      L.push(`  - ${icon} \`${st.name}\` (${st.durationMs}ms)${st.reason ? ` — ${st.reason}` : ''}`);
+    }
+    if (o.pr) {
+      L.push('');
+      L.push(`### ✅ MR/PR 真创建: [!${o.pr.prNumber}](${o.pr.url})`);
+    } else {
+      L.push('');
+      L.push(
+        '_(默认 dryRun。要真发: ① issue 加标签 `gitnexus:auto-pr-live` ② server 配 `GITNEXUS_AUTOPR_LIVE=1` ③ S6 必须绿勾。三个条件都满足才真发，少一个都安全兜底)_',
+      );
+    }
+  }
+  L.push('');
+
+  // ─── 末尾说明 ─────────────────────────────────────
+  L.push('---');
+  L.push(
+    '<sub>由 [GitNexus Pipeline Orchestrator](https://github.com/abhigyanpatwari/GitNexus) v0.3 自动生成。如果这条评论本不该出现，请联系运维移除 webhook 配置。</sub>',
+  );
+  return L.join('\n');
+}
+
+// ─── 辅助：统计各阶段产物 ────────────────────────────
+
+function countBlastFiles(report: PipelineReport): number {
+  let n = 0;
+  for (const r of report.s3_blast) {
+    if (r.status !== 'ok' || !r.output) continue;
+    const o = r.output as any;
+    if (Array.isArray(o.files)) n += o.files.length;
+  }
+  return n;
+}
+
+function countBlastCross(report: PipelineReport): number {
+  let n = 0;
+  for (const r of report.s3_blast) {
+    if (r.status !== 'ok' || !r.output) continue;
+    const o = r.output as any;
+    if (Array.isArray(o.cross)) n += o.cross.length;
+  }
+  return n;
+}
+
+function countS4Suspects(report: PipelineReport): number {
+  if (report.s4_forensics.status !== 'ok' || !report.s4_forensics.output) return 0;
+  const o = report.s4_forensics.output as any;
+  return Array.isArray(o.suspects) ? o.suspects.length : 0;
+}
+
+function countS5Files(report: PipelineReport): number {
+  let n = 0;
+  for (const r of report.s5_testgen) {
+    if (r.status !== 'ok' || !r.output) continue;
+    const o = r.output as any;
+    if (Array.isArray(o.files)) n += o.files.length;
+  }
+  return n;
+}
+
+function s6StatusIcon(report: PipelineReport): string {
+  const s = report.s6_preview;
+  if (s.status === 'skipped') return '⚪ skipped';
+  if (s.status === 'error') return '❌ error';
+  return s.output?.pass ? '✅ ok' : '⚠️ ok (pass=false)';
+}
+
+function s6Brief(report: PipelineReport): string {
+  const s = report.s6_preview;
+  if (s.status === 'skipped') return s.reason ?? 'skipped';
+  if (s.status === 'error') return (s.reason ?? '').slice(0, 60);
+  if (!s.output) return '';
+  const tr = s.output.testResult as any;
+  const passFail = tr ? `pass=${tr.passed ?? 0} fail=${tr.failed ?? 0}` : 'no junit';
+  return `\`${s.output.ns}\` · ${passFail}`;
+}
+
+function s7StatusIcon(report: PipelineReport): string {
+  const s = report.s7_autopr;
+  if (s.status === 'skipped') return '⚪ skipped';
+  if (s.status === 'error') return '❌ error';
+  if (s.output?.pr) return '✅ MR opened';
+  return s.output?.rejectedReason ? '🚫 rejected' : '⚪ dryRun';
+}
+
+function s7Brief(report: PipelineReport): string {
+  const s = report.s7_autopr;
+  if (s.status === 'skipped') return s.reason ?? 'skipped';
+  if (s.status === 'error') return (s.reason ?? '').slice(0, 60);
+  if (s.output?.pr) return `[!${s.output.pr.prNumber}](${s.output.pr.url})`;
+  return s.output?.rejectedReason?.slice(0, 80) ?? 'dryRun';
 }
 
 // ─── 主流程：webhook → handler 调本函数 ─────────────────────────────

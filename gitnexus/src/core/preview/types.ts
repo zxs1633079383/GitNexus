@@ -21,6 +21,8 @@ export interface PreviewSpec {
   serviceName: string;
   /** Service 暴露端口；省略默认 80 */
   servicePort?: number;
+  /** 可选: 覆盖 deployment 容器 command (busybox/alpine 这类需要 sleep 3600 持续 ready) */
+  serviceCommand?: string[];
   /** 测试容器镜像（如 busybox:1.36 dev 自测 / curl pod / 自定义 e2e runner） */
   testImage: string;
   /** 测试容器启动命令 */

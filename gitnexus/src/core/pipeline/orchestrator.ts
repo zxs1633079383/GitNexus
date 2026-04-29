@@ -221,10 +221,11 @@ export async function runPipeline(
       const enq = await deps.validateInPreview({
         service_image: input.preview!.serviceImage,
         service_name: 'svc-' + (resolvedHandlerUids[0]?.replace(/[^a-z0-9]/gi, '').toLowerCase().slice(0, 12) || 'auto'),
+        service_command: input.preview!.serviceCommand,
         test_image: input.preview!.testImage ?? input.preview!.serviceImage,
         test_command: input.preview!.testCommand,
         ttl_seconds: input.preview!.ttlSeconds,
-      });
+      } as any);
       if (enq.error || !enq.jobId) {
         throw new Error(enq.error ?? 'validate_in_preview returned no jobId');
       }
