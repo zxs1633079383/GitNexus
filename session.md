@@ -374,19 +374,33 @@ Agentic-Devops 仓 (镜像, 非 git): /Users/mac28/workspace/ai-workspace/Agenti
 
 ---
 
-## 12. ✅ 接力检查清单（新会话第一件事）
+## 12. ✅ 接力检查清单（新会话第一件事 — 跨仓阶段, 2026-04-29 起）
 
-按顺序过：
+> 单仓 single-repo/v1.0.3 已完整闭环（issue#25 → MR!30, $1.11, 234s）。
+> 新会话目标：把单仓闭环扩到**跨仓**（`cross-repo/v1.0.0`）。
+> 老的 Phase 0 接力清单（jaeger-span-normalizer 起步）已 obsolete，看 §19 单仓最终成果。
 
-- [ ] 读完本 session.md
-- [ ] 读 RULES.md 全文
-- [ ] 读 roadmap 主文档 §0-§2
-- [ ] 跳读 §3.1 Phase 0 详细方案（如要做 Phase 0）
-- [ ] 确认当前分支：`git -C /Users/mac28/workspace/java/zlc_ai/GitNexus branch --show-current` = `docs/agentic-devops-roadmap-v2`
-- [ ] 确认 git status clean
-- [ ] 确认 `/tmp/jaeger-trace.json` 仍在；不在则用 §10 的 curl 重新拉
-- [ ] 开 `feat/jaeger-span-normalizer` 子分支
-- [ ] 第一刀：写 `gitnexus/src/core/observability/jaeger-span-types.ts`
+按顺序过（10 分钟）：
+
+- [ ] 读 [`/CLAUDE.md`](CLAUDE.md) §⚓ 主航道（守轨规则 + 7 条偏轨道清单）
+- [ ] 读 [`docs/learn/全流程演示-issue到真改代码.md`](docs/learn/全流程演示-issue到真改代码.md)（§0 TL;DR + §3 实跑剖析 = 5 分钟）
+- [ ] 读 [`docs/learn/跨仓-Agentic-DevOps-roadmap.md`](docs/learn/跨仓-Agentic-DevOps-roadmap.md) **必读**（§1 单仓 vs 跨仓 7 维度对比 + §2 9 个缺口 D-1..D-9）
+- [ ] 跳读 [`docs/learn/单仓-Agentic-DevOps-闭环-真跑通-SOP.md`](docs/learn/单仓-Agentic-DevOps-闭环-真跑通-SOP.md) §6（每段对应源码位置, 跨仓改要看哪些点）
+- [ ] 看 §19（单仓最终成果速查）
+- [ ] 确认当前分支：`feat/jaeger-span-normalizer`（保留），跨仓开新分支 `feat/cross-repo-bridge`
+- [ ] 确认 server / eval-server 都活：`curl :3034/health` + `curl :4848/health`
+  - eval-server 18+ 仓含 cses-java / mattermost / clawlive / clawlive-api
+  - webhook server PID `cat /tmp/gnx-server.pid` 跑 v1.0.3
+- [ ] **第一刀必须 0 周 spike — 不要直接进 Phase 1**:
+  ```bash
+  # 不动生产, 在 staging registry 验真 OSS 1.4.1 group 命令真签名
+  gitnexus group --help                          # 看真 subcommand: 是 sync 不是 analyze?
+  gitnexus group create yundiz-staging
+  gitnexus group add --help                      # 看真参数: positional 还是 --group/--repo flag?
+  # 实测后, 拿真签名回填 docs/learn/跨仓-...-roadmap.md §2 D-1
+  ```
+- [ ] spike 输出存 `/tmp/group-spike-output.json`, 作为 Phase 2 fixture
+- [ ] **第二刀**：拿到真签名后再开 Phase 1 — bridge.lbug + contract registry 接入
 
 ---
 
@@ -402,6 +416,13 @@ Agentic-Devops 仓 (镜像, 非 git): /Users/mac28/workspace/ai-workspace/Agenti
 ✅ MVP v1.0.0  完整 7 阶段闭环代码 + tag
 ✅ MVP v1.1.0  Jaeger 真接入 + 路线图闭环审计
 ✅ MVP v1.2.0-bridge  webhook S2/S3 走全局 eval-server 真索引 (cypher-only, 替 4 处 mock)
+✅ MVP v1.2.0-bridge.1  CLI 主路径 + cypher fallback + 多仓 token map
+✅ MVP v1.3.0-llm-patch  claude-cli stream-json 接入, LLM 真改 Java 代码 + 真断言
+─────────────────────────────────────────
+✅ single-repo/v1.0.0  单仓 Agentic DevOps 闭环达成 (issue → 真发 MR 含真改代码)
+✅ single-repo/v1.0.1  gitnexus-dev review 整改 5 项 (dryRun env 闸 / R-14 黑名单 / LLM 并发 / S4 真 git log / 删死文件)
+✅ single-repo/v1.0.2  P1 reindex 真接 + M-2/M-3/L-3 polish + 跨仓 roadmap 文档
+✅ single-repo/v1.0.3  issue 评论 S4 表格渲染对齐 (两套 renderer 都修)
 ─────────────────────────────────────────
 真实 e2e 验证 (3 次 tag):
   · e2e/v0.1.0-yundiz       git.yundiz.com 单次真 MR (issue #2/#3)
@@ -445,10 +466,42 @@ e2e/v0.1.0-yundiz       真 git.yundiz.com 单次验证
 e2e/v0.2.0-overnight    隔夜 13 维度
 e2e/v0.3.0-real-jaeger  真 Jaeger 端到端
 e2e/v0.4.0-live-bridge  完整 7 阶段 LIVE 闭环 (S2-S7 全绿) — issue#18 → MR!24
+e2e/v0.5.0-llm-patch    LLM 真改 Java 代码 + 真断言 — issue#22 → MR!27
 
 mvp/v1.2.0-bridge       eval-server HTTP 桥接, S2/S3 真索引数据
 mvp/v1.2.0-bridge.1     CLI 主路径 + cypher fallback + 多仓 token map
+mvp/v1.3.0-llm-patch    claude-cli stream-json + R-14 system prompt + StructuredOutput
+
+single-repo/v1.0.0      ⭐ 单仓 Agentic DevOps 闭环达成
+single-repo/v1.0.1      ⭐ 5 项 review 整改 (dryRun 三因子 / R-14 黑名单 / LLM 并发 / S4 真 / 删死)
+single-repo/v1.0.2      ⭐ P1 reindex + M-2/M-3/L-3 polish + 跨仓 roadmap
+single-repo/v1.0.3      ⭐ issue/MR 双 renderer S4 渲染对齐 (本次最终)
 ```
+
+### 19. 单仓闭环最终成果 (single-repo/v1.0.3, 2026-04-29)
+
+**端到端真跑通**: 在 cses/java/cses/cses 仓共发 5 次 LIVE MR (!24~!30 跨多个版本):
+
+| issue → MR | tag | 验证点 | LLM cost |
+|---|---|---|---|
+| #18 → !24 | e2e/v0.4.0-live-bridge | 7 阶段 LIVE 首跑通 (S6 K8s preview pass) | (无 LLM) |
+| #22 → !27 | e2e/v0.5.0-llm-patch | LLM 真改 Java 代码 + 真断言首发 | $1.42 |
+| #23 → !28 | single-repo/v1.0.1 验证 | 多仓 token + 重启 server 不丢 secret | $1.07 |
+| #24 → !29 | single-repo/v1.0.2 验证 | S4 真喂 dc92d9f1 给 LLM, patch 质量提升 | $0.98 |
+| #25 → !30 | single-repo/v1.0.3 验证 | 双 renderer 对齐, 真 commit/subject/author 显示 | $1.11 |
+
+**关键产物**:
+- `docs/learn/单仓-Agentic-DevOps-闭环-真跑通-SOP.md` (454 行) — 给新人 10 分钟读懂
+- `docs/learn/跨仓-Agentic-DevOps-roadmap.md` (374 行) — 9 个缺口 D-1..D-9 + Phase 1-6 路径
+- `docs/learn/全流程演示-issue到真改代码.md` (本次新增) — 实跑数据 walkthrough
+- `CLAUDE.md` §⚓ 主航道 — 7 阶段守轨 + 7 条偏轨道清单
+
+**剩余 backlog (未在 single-repo/v1.0.x)**:
+- M-1 类型治理 (orchestrator 内 as any 集中点) — 单独 PR
+- 跨仓 D-1~D-9 (跨仓 roadmap §2) — 等 Phase 0 spike 验真
+- GitHub 平台回归测试 — 待 user 提供 GitHub PAT 后跑 zxs1633079383/clawlive 仓
+
+
 
 ### 18.5 LIVE bridge e2e (2026-04-29 落地, e2e/v0.4.0-live-bridge)
 
@@ -623,19 +676,40 @@ npx tsx scripts/start-webhook-server.ts
 
 ---
 
-## 16. 给新会话的开场白（粘贴用）
+## 16. 给新会话的开场白（粘贴用 — 跨仓接力版, 2026-04-29 起）
 
-第一句对话建议这样开：
+复制粘贴这段给新会话开第一句（10 分钟读完上下文）：
 
-> 我接力上一个会话，目标是把 GitNexus Agentic DevOps 7 阶段闭环 MVP 落到业务仓。
-> 已读完 session.md + RULES.md。当前在 `feat/jaeger-span-normalizer` 分支，
-> MVP v1.1.0 已 tag，真 Jaeger e2e 跑通。剩余 backlog 是并行线 + 业务仓接入。
+> 我接力上一个会话，做**跨仓 Agentic DevOps**（cross-repo/v1.0.0）。
+>
+> **单仓闭环已稳**：`single-repo/v1.0.3` tag 落地，5 次真跑（issue#21~#25 → MR!25~!30），LLM 真改 Java 代码 + 真断言，每次 ~$1.1 / 4 分钟。最后一次 issue#25 → MR!30 ([URL](http://git.yundiz.com/cses/java/cses/cses/-/merge_requests/30))。
+>
+> **必读三篇**（10 分钟）：
+> 1. [`/CLAUDE.md`](CLAUDE.md) §⚓ 主航道 — 守轨规则 + 7 条偏轨道清单
+> 2. [`docs/learn/全流程演示-issue到真改代码.md`](docs/learn/全流程演示-issue到真改代码.md) §0 TL;DR + §3 实跑剖析
+> 3. [`docs/learn/跨仓-Agentic-DevOps-roadmap.md`](docs/learn/跨仓-Agentic-DevOps-roadmap.md) — 9 个缺口 D-1..D-9 + Phase 1-6 路径
+>
+> **第一刀 = 0 周 spike**（不动生产）：实测 `gitnexus group --help` / `group add --help` 真签名，gitnexus-dev agent 知识库训练于 2026-04-26 可能漂，roadmap 文档里 D-1 段的 CLI 命令必须现场验。把真签名回填进 roadmap 再开 Phase 1。
+>
+> **现成可用素材**:
+> - eval-server :4848 已索引 19 仓，含 `cses-java` / `mattermost` / `clawlive` (TS) / `clawlive-api` (Java Spring)
+> - webhook server PID `cat /tmp/gnx-server.pid` 跑 v1.0.3，多仓 token map / bridge repo map / repo path map 都通
+> - 跨仓 demo 拓扑可用 cses-java↔mattermost (yundiz 内网 GitLab) 或 clawlive↔clawlive-api (GitHub 公开, 但 GitHub e2e 需公网中转, 留 backlog)
+>
+> **不要做的事**（守轨）:
+> - 不要直接照 roadmap §2 D-1 的 CLI 跑（agent review 抓出 4 个 CRITICAL CLI 命令幻觉）
+> - 不要碰 ns 前缀守门（K8s `gitnexus-preview-*` 强制）
+> - 不要绕 R-12 / R-14 安全闸
+> - 不要新增 stage 改 OrchestratorDeps 接口（mock + 真两路对称）
+>
 > 用户接下来希望 [X]。
 
-[X] 候选：
-- "用 GitNexus 索引一下业务仓 X，让 S3-S5 也真跑"
-- "做 S6.2 image-injector"  / "做 P2 多跳" / "做 P3 wiki 刷新" / "做 P6 OCaml"
-- "在生产 issue 上跑一次 live PR"
+[X] 候选（按推荐顺序）：
+- **Phase 0 spike**：实测 group CLI + 在 staging 跑通 `bridge.lbug` 生成（推荐第一刀）
+- **Phase 1 D-1**：拿到 spike 输出后接入 group analyze + bridge.lbug 查询
+- **Phase 2 D-2/D-3**：S3 跨仓 BFS + S4 跨仓 git log
+- **GitHub 平台 e2e**：clawlive-api 仓做 GitHub webhook 全流程（需 GitHub PAT + ngrok 公网中转）
+- **M-1 类型治理**：orchestrator 内 `as any` 集中点（独立 PR，不阻塞跨仓）
 
 ---
 
