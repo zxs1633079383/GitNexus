@@ -247,9 +247,57 @@ export async function runPipeline(
     );
   }
 
+  // ── S3 增量: 跨仓 ContractLink (cross-repo/v1.0.0) ────────────────────
+  // 每条 ok 的 S3 取对应 S2 的 contractId, 调 deps.crossBlastRadius 找 partner 仓 handler.
+  // 命中的 crossLinks 作为不变量塞进 s3 output (caller 看 'crossLinks' 字段).
+  // deps.crossBlastRadius 缺省时整段 skip — 单仓退化到 cross-repo/v1.0.0 之前行为.
+  if (deps.crossBlastRadius && s3_blast.some((r) => r.status === 'ok')) {
+    for (let i = 0; i < s3_blast.length; i++) {
+      const blast = s3_blast[i];
+      if (blast.status !== 'ok' || !blast.output) continue;
+      const uid = resolvedHandlerUids[i];
+      // 找到该 uid 对应的 S2 result, 拿 contractId
+      const s2Match = s2_resolve.find(
+        (r) => r.status === 'ok' && extractHandlerUid(r.output) === uid,
+      );
+      const contractId = (s2Match?.output as { contractId?: string } | undefined)?.contractId;
+      if (!contractId) continue;
+      try {
+        const crossLinks = await deps.crossBlastRadius({ contractId });
+        if (crossLinks.length > 0) {
+          // 不可变 update: 重建 output 对象塞 crossLinks
+          s3_blast[i] = {
+            ...blast,
+            output: {
+              ...(blast.output as Record<string, unknown>),
+              crossLinks,
+            } as S3Output,
+          };
+        }
+      } catch (e) {
+        // 跨仓失败不阻塞主链路 — log 后忽略
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[orchestrator] crossBlastRadius failed for ${contractId}: ${(e as Error).message}`,
+        );
+      }
+    }
+  }
+
   // ── S4 · regression_forensics ─────────────────────────────────────────
+  // cross-repo/v1.0.0: 把 S3 收的 crossLinks 透给 S4, 让 S4 也对 partner 仓 git log.
+  const s4CrossLinks: Array<Record<string, unknown>> = [];
+  for (const r of s3_blast) {
+    if (r.status !== 'ok' || !r.output) continue;
+    const o = r.output as { crossLinks?: Array<Record<string, unknown>> };
+    if (Array.isArray(o.crossLinks)) s4CrossLinks.push(...o.crossLinks);
+  }
   const s4_forensics = await runStage<S4Output>('S4', () =>
-    deps.regressionForensics({ spans: input.spans, lookback }),
+    deps.regressionForensics({
+      spans: input.spans,
+      lookback,
+      crossLinks: s4CrossLinks.length > 0 ? (s4CrossLinks as never) : undefined,
+    }),
   );
 
   // ── S5 · gen_e2e_tests ────────────────────────────────────────────────
@@ -313,7 +361,11 @@ export async function runPipeline(
   // 不暴露成正式 stage (避免改 PipelineReport schema), 用本地变量传递给 S7.
   // 失败 / abort / 未实现 → 沿用 S5 scaffold + 诊断报告路径 (mvp/v1.2 行为).
   let genFixResult:
-    | { fixFiles: Array<{ path: string; content: string }>; testFiles: Array<{ path: string; content: string }>; reasoning: string }
+    | {
+        fixFiles: Array<{ path: string; content: string; repo?: string }>;
+        testFiles: Array<{ path: string; content: string; repo?: string }>;
+        reasoning: string;
+      }
     | null = null;
   let genFixDiagnostic = '';
   if (deps.genFix && resolvedHandlerUids.length > 0 && input.spans.length > 0) {
@@ -327,6 +379,31 @@ export async function runPipeline(
       const blastFiles = ((s3Match?.output as { files?: string[] } | undefined)?.files ?? []).filter(
         (f): f is string => typeof f === 'string',
       );
+      // cross-repo/v1.0.0: 把 S3 crossLinks 翻译成 LLM partners (要 caller 在 input 里给 partnerLocalPaths)
+      const crossLinksAll: Array<Record<string, unknown>> = [];
+      for (const r of s3_blast) {
+        if (r.status !== 'ok' || !r.output) continue;
+        const o = r.output as { crossLinks?: Array<Record<string, unknown>> };
+        if (Array.isArray(o.crossLinks)) crossLinksAll.push(...o.crossLinks);
+      }
+      const crossRepoPartners = crossLinksAll
+        .map((c) => {
+          const ph = (c.partnerHandler ?? {}) as Record<string, unknown>;
+          const alias = typeof c.partnerRepo === 'string' ? c.partnerRepo : '';
+          if (!alias) return null;
+          const localPath = input.crossRepoLocalPaths?.[alias];
+          if (!localPath) return null; // caller 没配 → 没法 add-dir, 跳过
+          return {
+            repoAlias: alias,
+            localPath,
+            handlerFilePath: typeof ph.filePath === 'string' ? ph.filePath : '',
+            handlerName: typeof ph.name === 'string' ? ph.name : '',
+            contractId: typeof c.contractId === 'string' ? c.contractId : '',
+            confidence: typeof c.confidence === 'number' ? c.confidence : 0,
+          };
+        })
+        .filter((p): p is NonNullable<typeof p> => p !== null);
+
       const errorContext = stringifySpanError(input.spans[0]);
       // 把 S4 Top1 嫌疑 commit + diff 喂给 LLM (H-3 修): 没有就传 undefined
       const s4Output = s4_forensics.status === 'ok' ? (s4_forensics.output as {
@@ -350,6 +427,7 @@ export async function runPipeline(
           blastRadiusFiles: blastFiles.slice(0, 30),
           suspectCommit,
           issueRef: input.prTarget?.issueRef,
+          crossRepoPartners: crossRepoPartners.length > 0 ? crossRepoPartners : undefined,
         });
         const dur = now() - t0;
         if (fix.ok && (fix.fixFiles.length > 0 || fix.testFiles.length > 0)) {
@@ -358,7 +436,9 @@ export async function runPipeline(
             testFiles: fix.testFiles,
             reasoning: fix.reasoning,
           };
-          genFixDiagnostic = `LLM patch ok in ${dur}ms cost=$${(fix.costUsd ?? 0).toFixed(4)} fix=${fix.fixFiles.length} tests=${fix.testFiles.length}`;
+          const crossCount = (fix.fixFiles.filter((f) => f.repo).length +
+            fix.testFiles.filter((f) => f.repo).length);
+          genFixDiagnostic = `LLM patch ok in ${dur}ms cost=$${(fix.costUsd ?? 0).toFixed(4)} fix=${fix.fixFiles.length} tests=${fix.testFiles.length} cross=${crossCount}`;
         } else {
           genFixDiagnostic = `LLM patch abort: ${fix.reason ?? '(no reason)'} (cost=$${(fix.costUsd ?? 0).toFixed(4)}, ${dur}ms)`;
         }
@@ -417,12 +497,26 @@ export async function runPipeline(
 
       // 优先用 LLM 真补丁 + 真断言测试 (R-14); 没有就走 S5 scaffold (R-1)
       // fixFiles 是改既有文件 → op=update; testFiles 一般是新建 → op=create
+      // cross-repo/v1.0.0: fixFiles[i].repo 决定走主仓还是 partner. 这里只放主仓 (repo == undefined).
+      const partnerFixGroups = new Map<string, Array<{ path: string; content: string; op: 'create' | 'update' }>>();
       if (genFixResult) {
         for (const f of genFixResult.fixFiles) {
-          candidateFiles.push({ path: f.path, content: f.content, op: 'update' });
+          const entry = { path: f.path, content: f.content, op: 'update' as const };
+          if (f.repo) {
+            if (!partnerFixGroups.has(f.repo)) partnerFixGroups.set(f.repo, []);
+            partnerFixGroups.get(f.repo)!.push(entry);
+          } else {
+            candidateFiles.push(entry);
+          }
         }
         for (const f of genFixResult.testFiles) {
-          candidateFiles.push({ path: f.path, content: f.content, op: 'create' });
+          const entry = { path: f.path, content: f.content, op: 'create' as const };
+          if (f.repo) {
+            if (!partnerFixGroups.has(f.repo)) partnerFixGroups.set(f.repo, []);
+            partnerFixGroups.get(f.repo)!.push(entry);
+          } else {
+            candidateFiles.push(entry);
+          }
         }
       } else {
         for (const path of s5Files.slice(0, 5)) {
@@ -439,17 +533,81 @@ export async function runPipeline(
         repo: input.prTarget!.repo,
         baseBranch: input.prTarget!.baseBranch,
         title: `${input.prTarget!.titlePrefix ?? 'fix(auto):'} GitNexus 7 阶段闭环自动 PR`,
-        bodyMarkdown: prBodyMd,
+        bodyMarkdown:
+          prBodyMd +
+          (partnerFixGroups.size > 0
+            ? `\n\n---\n\n### 🌐 跨仓 (cross-repo/v1.0.0)\n\n本次 LLM 在 ${partnerFixGroups.size} 个 partner 仓也产了 patch, 走独立 MR (见同仓评论).`
+            : ''),
         files: candidateFiles,
         labels: input.prTarget!.labels ?? ['auto-fix', 'gitnexus-pipeline'],
         issueRef: input.prTarget!.issueRef,
       };
-      return await deps.autoPR({
+
+      const primaryResult = await deps.autoPR({
         candidate,
         provider: input.prTarget!.provider,
         dryRun: input.prTarget!.dryRun !== false,
         stage6Pass,
       });
+
+      // ── cross-repo/v1.0.0: 各 partner 仓单独发 MR ──────────────────
+      const crossRepoPRs: NonNullable<S7Output['crossRepoPRs']> = [];
+      if (partnerFixGroups.size > 0) {
+        const crossTargets = input.prTarget!.crossRepoTargets ?? {};
+        for (const [alias, partnerFiles] of partnerFixGroups) {
+          const tgt = crossTargets[alias];
+          if (!tgt) {
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[orchestrator] partner alias "${alias}" 有 patch 但 crossRepoTargets 未配 owner/repo, 跳过`,
+            );
+            continue;
+          }
+          // partner candidateFiles 构造: 只放 LLM 给该 partner 的 patch + 一份 cross-link 索引 md
+          // primary MR 信息 (URL/branch) 拼到 partner body, 用于 traceability
+          const primaryPRUrl = primaryResult.pr?.url ?? '(dryRun, no URL)';
+          const partnerBody =
+            `### 🌐 cross-repo MR (partner=${alias})\n\n` +
+            `这是 issue \`${input.prTarget!.issueRef ?? '?'}\` 触发的跨仓 patch 的 partner 一侧.\n\n` +
+            `**主仓 MR**: ${primaryPRUrl}\n` +
+            `**partner alias**: \`${alias}\`\n` +
+            `**partner 仓**: \`${tgt.owner}/${tgt.repo}\` @ \`${tgt.baseBranch}\`\n\n` +
+            `LLM reasoning (跨仓部分):\n\n> ${(genFixResult?.reasoning ?? '').replace(/\n/g, '\n> ')}\n`;
+          const partnerCandidate: PRCandidate = {
+            owner: tgt.owner,
+            repo: tgt.repo,
+            baseBranch: tgt.baseBranch,
+            title: `${input.prTarget!.titlePrefix ?? 'fix(auto):'} cross-repo partner patch (${alias})`,
+            bodyMarkdown: partnerBody,
+            files: partnerFiles,
+            labels: input.prTarget!.labels ?? ['auto-fix', 'gitnexus-pipeline', 'cross-repo'],
+            issueRef: input.prTarget!.issueRef,
+          };
+          try {
+            const partnerResult = await deps.autoPR({
+              candidate: partnerCandidate,
+              provider: input.prTarget!.provider,
+              dryRun: input.prTarget!.dryRun !== false,
+              stage6Pass,
+            });
+            crossRepoPRs.push({
+              partnerAlias: alias,
+              partnerFullName: `${tgt.owner}/${tgt.repo}`,
+              result: partnerResult,
+            });
+          } catch (e) {
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[orchestrator] partner ${alias} (${tgt.owner}/${tgt.repo}) autoPR throw: ${(e as Error).message}`,
+            );
+          }
+        }
+      }
+
+      // 主仓 MR 是 canonical S7Output; partner 信息附在 crossRepoPRs 字段
+      return crossRepoPRs.length > 0
+        ? { ...primaryResult, crossRepoPRs }
+        : primaryResult;
     });
   }
 
@@ -535,9 +693,23 @@ function buildAutoPRReportFile(args: {
       L.push('受影响文件:');
       for (const f of o.files.slice(0, 20)) L.push(`- \`${typeof f === 'string' ? f : (f as any).filePath ?? JSON.stringify(f)}\``);
     }
+    // crossLinks: cross-repo/v1.0.0 真 DIY bridge 输出 (新)
+    if (Array.isArray(o.crossLinks) && o.crossLinks.length > 0) {
+      L.push('');
+      L.push('🌐 跨仓 ContractLink:');
+      for (const c of o.crossLinks.slice(0, 10)) {
+        const ph = (c as any).partnerHandler ?? {};
+        const conf = typeof (c as any).confidence === 'number' ? (c as any).confidence.toFixed(2) : '?';
+        L.push(
+          `- \`${(c as any).partnerRepo}\` → \`${ph.filePath ?? '?'}:${ph.startLine ?? '?'}\` ${ph.name ?? '?'} _(${(c as any).matchType}, conf=${conf})_`,
+        );
+        if ((c as any).contractId) L.push(`  contract: \`${(c as any).contractId}\``);
+      }
+    }
+    // cross: 旧 schema, 兼容
     if (Array.isArray(o.cross) && o.cross.length > 0) {
       L.push('');
-      L.push('跨仓影响:');
+      L.push('跨仓影响 (旧 schema):');
       for (const c of o.cross.slice(0, 10)) L.push(`- \`${(c as any).repo}\` → \`${(c as any).uid}\` (${(c as any).risk ?? '?'})`);
     }
     if (o.note) L.push(`> _${o.note}_`);
@@ -548,23 +720,44 @@ function buildAutoPRReportFile(args: {
   if (args.s4_forensics.status === 'ok' && args.s4_forensics.output) {
     const o = args.s4_forensics.output as any;
     const suspects = Array.isArray(o.suspects) ? o.suspects : [];
-    if (suspects.length === 0) L.push('_无嫌疑 commit_' + (o.note ? ` (${o.note})` : ''));
-    else {
-      // 兼容两种 suspect 形态:
-      //  · v1.0.2 真 git log 形态: { hash, subject, author, date }
-      //  · 旧 mock 形态: { commitHash, confidence, symbolUid, timeAgoSec }
-      L.push('| commit | subject / symbol | author / 多久前 |');
-      L.push('|---|---|---|');
-      for (const s of suspects.slice(0, 10)) {
-        const hash = s.hash ?? s.commitHash ?? '?';
-        const subject = s.subject ?? s.symbolUid ?? '?';
-        const author = s.author ?? (s.confidence ? `(conf ${(s.confidence ?? 0).toFixed(2)})` : '?');
-        const when = s.date ?? (s.timeAgoSec ? `${(s.timeAgoSec / 3600).toFixed(1)}h ago` : '?');
-        L.push(
-          `| \`${String(hash).slice(0, 8)}\` | ${String(subject).slice(0, 80).replace(/\|/g, '\\|')} | ${author} · ${when} |`,
-        );
+    const partnerSuspects = Array.isArray(o.partnerSuspects) ? o.partnerSuspects : [];
+    if (suspects.length === 0 && partnerSuspects.length === 0) {
+      L.push('_无嫌疑 commit_' + (o.note ? ` (${o.note})` : ''));
+    } else {
+      if (suspects.length > 0) {
+        L.push('### 主仓嫌疑 commit');
+        // 兼容两种 suspect 形态:
+        //  · v1.0.2 真 git log 形态: { hash, subject, author, date }
+        //  · 旧 mock 形态: { commitHash, confidence, symbolUid, timeAgoSec }
+        L.push('| commit | subject / symbol | author / 多久前 |');
+        L.push('|---|---|---|');
+        for (const s of suspects.slice(0, 10)) {
+          const hash = s.hash ?? s.commitHash ?? '?';
+          const subject = s.subject ?? s.symbolUid ?? '?';
+          const author = s.author ?? (s.confidence ? `(conf ${(s.confidence ?? 0).toFixed(2)})` : '?');
+          const when = s.date ?? (s.timeAgoSec ? `${(s.timeAgoSec / 3600).toFixed(1)}h ago` : '?');
+          L.push(
+            `| \`${String(hash).slice(0, 8)}\` | ${String(subject).slice(0, 80).replace(/\|/g, '\\|')} | ${author} · ${when} |`,
+          );
+        }
+        if (o.handlerFile) L.push(`> _git log -- ${o.handlerFile}_`);
       }
-      if (o.handlerFile) L.push(`> _git log -- ${o.handlerFile}_`);
+      // cross-repo/v1.0.0: partner 仓嫌疑 commit (按 partner 分组)
+      for (const grp of partnerSuspects) {
+        const ps = Array.isArray(grp.suspects) ? grp.suspects : [];
+        if (ps.length === 0) continue;
+        L.push('');
+        L.push(`### 🌐 partner \`${grp.partnerRepo}\` 嫌疑 commit (${grp.partnerFilePath})`);
+        L.push('| commit | subject | author / 时间 |');
+        L.push('|---|---|---|');
+        for (const s of ps.slice(0, 5)) {
+          const hash = s.hash ?? '?';
+          const subject = (s.subject ?? '?').toString().slice(0, 80).replace(/\|/g, '\\|');
+          const author = s.author ?? '?';
+          const when = s.date ?? '?';
+          L.push(`| \`${String(hash).slice(0, 8)}\` | ${subject} | ${author} · ${when} |`);
+        }
+      }
       if (o.note) L.push(`> _${o.note}_`);
     }
   }

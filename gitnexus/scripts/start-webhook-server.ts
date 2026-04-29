@@ -47,6 +47,7 @@ import {
   resolveHandler,
   blastRadius,
   parseMethodId,
+  crossBlastRadius,
 } from './mcp-bridge.js';
 import { runPatch, violatesSafetyPolicy } from './patch-runner.js';
 import { execFile as execFileCb, spawn } from 'node:child_process';
@@ -85,6 +86,29 @@ const REPO_PATH_MAP =
     process.env.GITNEXUS_REPO_PATH_MAP ?? '',
     'GITNEXUS_REPO_PATH_MAP',
   ) ?? {};
+// cross-repo/v1.0.0: { "<primary bridge repo>": ["<partner-1>", "<partner-2>"] }
+//   key = bridge repo alias (e.g. "cses-java"), 不是 GitLab 仓全名;
+//   value = 同一 group 里其它 partner 的 bridge repo alias.
+//   省略 / 空对象 → orchestrator 跨仓段 skip, 退化到单仓行为.
+const CROSS_REPO_PARTNERS =
+  parseJsonEnv<Record<string, string[]>>(
+    process.env.GITNEXUS_CROSS_REPO_PARTNERS ?? '',
+    'GITNEXUS_CROSS_REPO_PARTNERS',
+  ) ?? {};
+// cross-repo/v1.0.0: bridge alias → 本地 clone path. patch-runner 用它给 LLM 加 add-dir.
+//   {"mattermost": "/tmp/cses-pre/mattermost"}
+const CROSS_REPO_LOCAL_PATHS =
+  parseJsonEnv<Record<string, string>>(
+    process.env.GITNEXUS_CROSS_REPO_LOCAL_PATHS ?? '',
+    'GITNEXUS_CROSS_REPO_LOCAL_PATHS',
+  ) ?? {};
+// cross-repo/v1.0.0: bridge alias → GitLab/GitHub PR target.
+//   {"mattermost": {"owner": "cses/go", "repo": "mattermost", "baseBranch": "pre-im-k8s"}}
+const CROSS_REPO_TARGETS =
+  parseJsonEnv<Record<string, { owner: string; repo: string; baseBranch: string }>>(
+    process.env.GITNEXUS_CROSS_REPO_TARGETS ?? '',
+    'GITNEXUS_CROSS_REPO_TARGETS',
+  ) ?? {};
 const LLM_BUDGET_USD = Number(process.env.GITNEXUS_LLM_BUDGET_USD ?? '1.0');
 
 function pickToken(fullName: string): string {
@@ -100,6 +124,10 @@ function pickToken(fullName: string): string {
 
 function pickBridgeRepo(fullName: string): string {
   return BRIDGE_REPO_MAP[fullName] ?? BRIDGE_REPO_DEFAULT;
+}
+
+function pickPartners(bridgeRepo: string): string[] {
+  return CROSS_REPO_PARTNERS[bridgeRepo] ?? [];
 }
 
 if (!SECRET) {
@@ -336,6 +364,7 @@ function methodNameFromContract(contractId: string | undefined): string | undefi
 // ─── Pipeline deps factory (per-issue: 选 token + 选 bridge repo) ────
 function buildDeps(fullName: string): OrchestratorDeps {
   const repo = pickBridgeRepo(fullName);
+  const partners = pickPartners(repo);
   const provider = getProvider(fullName);
   return {
     resolveSpan: async (span) => {
@@ -454,6 +483,22 @@ function buildDeps(fullName: string): OrchestratorDeps {
       };
     },
 
+    // cross-repo/v1.0.0: partners 非空才装. 装上后 orchestrator 自动调用.
+    crossBlastRadius:
+      partners.length > 0 && bridgeOk
+        ? async (p) => {
+            const links = await crossBlastRadius(
+              {
+                contractId: p.contractId,
+                primaryRepo: repo,
+                partnerRepos: partners,
+              },
+              fetch,
+            );
+            return links;
+          }
+        : undefined,
+
     regressionForensics: async (p) => {
       const repoPath = REPO_PATH_MAP[fullName];
       if (!repoPath || !existsSync(repoPath)) {
@@ -480,33 +525,86 @@ function buildDeps(fullName: string): OrchestratorDeps {
       // 短名 (Java stack: 'TaskMemberReader.java') 通过 git ls-files 自动升级成仓内完整路径
       const fileGlob = handlerFile.split(/[\\/]/).pop() ?? handlerFile;
       const t0 = Date.now();
-      const suspects = await realGitForensics({
+      const primarySuspects = await realGitForensics({
         repoPath,
         filePath: fileGlob,
         lookback: p.lookback ?? 50,
         topN: 3,
       });
+      // cross-repo/v1.0.0: 对每个 cross-link 也跑 partner 仓 git log
+      const partnerSuspects: Array<{
+        partnerRepo: string;
+        partnerFilePath: string;
+        contractId?: string;
+        suspects: Awaited<ReturnType<typeof realGitForensics>>;
+      }> = [];
+      const crossLinks = (p as { crossLinks?: unknown[] }).crossLinks;
+      if (Array.isArray(crossLinks) && crossLinks.length > 0) {
+        for (const link of crossLinks) {
+          const lk = link as {
+            partnerRepo?: string;
+            partnerHandler?: { filePath?: string };
+            contractId?: string;
+          };
+          const partnerAlias = lk.partnerRepo;
+          const partnerFile = lk.partnerHandler?.filePath;
+          if (!partnerAlias || !partnerFile) continue;
+          const partnerLocal = CROSS_REPO_LOCAL_PATHS[partnerAlias];
+          if (!partnerLocal || !existsSync(partnerLocal)) continue;
+          const ps = await realGitForensics({
+            repoPath: partnerLocal,
+            filePath: partnerFile,
+            lookback: p.lookback ?? 50,
+            topN: 3,
+          });
+          partnerSuspects.push({
+            partnerRepo: partnerAlias,
+            partnerFilePath: partnerFile,
+            contractId: lk.contractId,
+            suspects: ps,
+          });
+        }
+      }
       const elapsed = Date.now() - t0;
-      const resolvedPath = suspects[0]?.resolvedPath ?? fileGlob;
+      const resolvedPath = primarySuspects[0]?.resolvedPath ?? fileGlob;
+      const partnerCount = partnerSuspects.reduce((n, p) => n + p.suspects.length, 0);
       console.log(
-        `  → S4 git log: repo=${repoPath} resolved=${resolvedPath} found=${suspects.length} (${elapsed}ms)`,
+        `  → S4 git log: repo=${repoPath} resolved=${resolvedPath} found=${primarySuspects.length} (+ ${partnerCount} cross-repo, ${partnerSuspects.length} partners) (${elapsed}ms)`,
       );
       return {
-        suspects: suspects.map((s) => ({
+        // 主仓 suspects (向后兼容 — 旧渲染器读这个字段)
+        suspects: primarySuspects.map((s) => ({
           hash: s.hash,
           subject: s.subject,
           author: s.author,
           date: s.date,
           hasDiff: !!s.diff,
         })),
-        topSuspectDiff: suspects[0]?.diff,
-        topSuspectHash: suspects[0]?.hash,
-        topSuspectSubject: suspects[0]?.subject,
+        topSuspectDiff: primarySuspects[0]?.diff,
+        topSuspectHash: primarySuspects[0]?.hash,
+        topSuspectSubject: primarySuspects[0]?.subject,
+        // cross-repo/v1.0.0: 跨仓 suspects 分组 (按 partner 仓)
+        partnerSuspects: partnerSuspects.map((g) => ({
+          partnerRepo: g.partnerRepo,
+          partnerFilePath: g.partnerFilePath,
+          contractId: g.contractId,
+          suspects: g.suspects.map((s) => ({
+            hash: s.hash,
+            subject: s.subject,
+            author: s.author,
+            date: s.date,
+            hasDiff: !!s.diff,
+          })),
+        })),
         spanCount: p.spans.length,
         handlerFile: resolvedPath,
-        note: suspects.length > 0
-          ? `git log -- ${resolvedPath} 找到 ${suspects.length} 个嫌疑 commit (Top1 含 diff)`
-          : `git log -- ${resolvedPath} 没找到 commit (lookback=${p.lookback ?? 50})`,
+        note:
+          primarySuspects.length > 0
+            ? `git log -- ${resolvedPath} 找到 ${primarySuspects.length} 个嫌疑 commit (Top1 含 diff)` +
+              (partnerSuspects.length > 0
+                ? ` · ${partnerSuspects.length} partner 仓另跑 ${partnerCount} 嫌疑 commit`
+                : '')
+            : `git log -- ${resolvedPath} 没找到 commit (lookback=${p.lookback ?? 50})`,
       };
     },
 
@@ -530,13 +628,21 @@ function buildDeps(fullName: string): OrchestratorDeps {
       validateInPreview(previewMgr, p as any) as any,
     checkPreviewStatus: async (p) =>
       checkPreviewStatus(previewMgr, p as any) as any,
-    autoPR: async (p) =>
-      await runAutoPR({
+    // cross-repo/v1.0.0: 按 candidate.owner/repo 动态选 provider — 让 partner 仓走它自己的 token.
+    autoPR: async (p) => {
+      const candidateFullName = `${p.candidate.owner}/${p.candidate.repo}`;
+      const repoProvider =
+        candidateFullName === fullName ? provider : getProvider(candidateFullName);
+      // env 配 max_patch_diff_lines (默认 R-12 policy 是 500; 跨仓 LLM 出完整文件内容容易超)
+      const maxPatchLines = Number(process.env.GITNEXUS_AUTOPR_MAX_PATCH_LINES ?? '500');
+      return await runAutoPR({
         candidate: p.candidate,
-        provider,
+        provider: repoProvider,
         dryRun: !!p.dryRun,
         stage6Pass: !!p.stage6Pass,
-      }),
+        policy: { max_patch_diff_lines: maxPatchLines },
+      });
+    },
 
     // ── 可选: 真 LLM 补丁 + 真断言 (R-14, claude-cli 实现) ──
     // 触发条件:
@@ -560,6 +666,8 @@ function buildDeps(fullName: string): OrchestratorDeps {
               blastRadiusFiles: p.blastRadiusFiles,
               suspectCommit: p.suspectCommit,
               issueRef: p.issueRef,
+              // cross-repo/v1.0.0: orchestrator 给的 partners 透传给 LLM
+              crossRepoPartners: p.crossRepoPartners,
               maxBudgetUsd: LLM_BUDGET_USD,
               onProgress: (line) => console.log(`     ${line}`),
             });
@@ -649,10 +757,29 @@ mountWebhookRoutes(app, {
       },
       {
         runPipeline: async (input) => {
+          // cross-repo/v1.0.0: 注入 partner 本地路径 + partner PR target
+          //   key 都是 bridge alias (与 GITNEXUS_CROSS_REPO_PARTNERS 一致)
+          const enrichedInput = {
+            ...input,
+            crossRepoLocalPaths:
+              Object.keys(CROSS_REPO_LOCAL_PATHS).length > 0
+                ? CROSS_REPO_LOCAL_PATHS
+                : input.crossRepoLocalPaths,
+            prTarget: input.prTarget
+              ? {
+                  ...input.prTarget,
+                  crossRepoTargets:
+                    Object.keys(CROSS_REPO_TARGETS).length > 0
+                      ? CROSS_REPO_TARGETS
+                      : input.prTarget.crossRepoTargets,
+                }
+              : input.prTarget,
+          };
+          const partners = pickPartners(pickBridgeRepo(event.fullName));
           console.log(
-            `  → pipeline spans=${input.spans.length} preview=${!!input.preview} prTarget=${!!input.prTarget} dryRun=${input.prTarget?.dryRun} bridgeRepo=${pickBridgeRepo(event.fullName)}`,
+            `  → pipeline spans=${input.spans.length} preview=${!!input.preview} prTarget=${!!input.prTarget} dryRun=${input.prTarget?.dryRun} bridgeRepo=${pickBridgeRepo(event.fullName)} partners=[${partners.join(',')}]`,
           );
-          return await runPipeline(input, deps);
+          return await runPipeline(enrichedInput, deps);
         },
         postIssueComment: async (a) => await provider.postIssueComment(a),
       },
@@ -721,6 +848,17 @@ async function startServer(): Promise<void> {
       console.log(
         `  llmPatch     ${validRepoPaths.length > 0 ? `✅ ${validRepoPaths.length} repo (claude -p budget=$${LLM_BUDGET_USD}, max-concurrent=${LLM_MAX_CONCURRENT})` : '⚪ disabled (REPO_PATH_MAP 为空或路径不存在)'}`,
       );
+      // cross-repo/v1.0.0 启动横幅
+      const partnersConfigured = Object.keys(CROSS_REPO_PARTNERS).length;
+      const crossTargetsConfigured = Object.keys(CROSS_REPO_TARGETS).length;
+      const crossLocalConfigured = Object.keys(CROSS_REPO_LOCAL_PATHS).length;
+      if (partnersConfigured > 0 || crossTargetsConfigured > 0 || crossLocalConfigured > 0) {
+        console.log(
+          `  crossRepo    🌐 partners=${JSON.stringify(CROSS_REPO_PARTNERS)} targets=${crossTargetsConfigured} localPaths=${crossLocalConfigured}`,
+        );
+      } else {
+        console.log('  crossRepo    ⚪ disabled (单仓模式)');
+      }
       console.log('═══════════════════════════════════════════════════════════');
       resolve();
     });

@@ -66,6 +66,18 @@ export interface S7AutoPRInput {
   issueRef?: string;
   /** PR 标签 */
   labels?: string[];
+  /**
+   * cross-repo/v1.0.0: partner 仓的 PR target.
+   * key = bridge alias (跟 GITNEXUS_CROSS_REPO_PARTNERS 一致), e.g. 'mattermost'
+   * value = 该 partner 仓在 GitLab/GitHub 的实际 owner/repo/baseBranch
+   *
+   * LLM 给某 partner 产出 patch (fixFiles[i].repo = alias) 时, S7 用这里的 target 发 partner 仓 MR.
+   * 缺这条 entry → partner patch 被丢弃 + 日志告警 (caller 没配齐).
+   */
+  crossRepoTargets?: Record<
+    string,
+    { owner: string; repo: string; baseBranch: string }
+  >;
 }
 
 // ─── Pipeline 输入 ────────────────────────────────────────────────────────
@@ -83,6 +95,12 @@ export interface PipelineInput {
   preview?: S6PreviewInput;
   /** 提供 → 跑 S7；省略 → S7 skip 'no PR target provided' */
   prTarget?: S7AutoPRInput;
+  /**
+   * cross-repo/v1.0.0: partner alias → 本地 clone 路径.
+   * orchestrator 把它转给 deps.genFix → patch-runner 用 add-dir 让 LLM Read partner 源码.
+   * key 跟 GITNEXUS_CROSS_REPO_PARTNERS 一致 (e.g. 'mattermost').
+   */
+  crossRepoLocalPaths?: Record<string, string>;
 }
 
 // ─── 各 stage 输出别名 ───────────────────────────────────────────────────
@@ -141,6 +159,22 @@ export interface PipelineReport {
 
 // ─── Orchestrator 依赖注入（便于 unit test mock） ─────────────────────────
 
+/** S3 增量 — 跨仓 contract link, 给 cross-repo/v1.0.0 用. */
+export interface CrossLinkOutput {
+  primaryRepo: string;
+  partnerRepo: string;
+  contractId: string;
+  partnerHandler: {
+    uid: string;
+    filePath: string;
+    name: string;
+    startLine?: number;
+    label?: 'Method' | 'Function';
+  };
+  matchType: 'cypher-name+path' | 'cypher-name-only';
+  confidence: number;
+}
+
 export interface OrchestratorDeps {
   resolveSpan: (span: SpanInput) => Promise<ResolveOutcome>;
   apiBlastRadius: (params: {
@@ -149,9 +183,27 @@ export interface OrchestratorDeps {
     depth?: number;
     cross_depth?: number;
   }) => Promise<S3Output>;
+
+  /**
+   * 跨仓 contract link 查询 — cross-repo/v1.0.0 加. Optional, 不提供时 orchestrator
+   * 跳过跨仓段, 退化到原单仓行为. 为保兼容 mock 路径, 这是 optional.
+   *
+   * 输入只有 contractId; primaryRepo + partnerRepos 由 dep 工厂闭包持有
+   * (webhook server 启动时根据 GITNEXUS_BRIDGE_REPO + GITNEXUS_CROSS_REPO_PARTNERS 装入).
+   *
+   * 输出: 对每个 partner 各返一条命中 (没命中时不返条目)
+   */
+  crossBlastRadius?: (params: {
+    contractId: string;
+  }) => Promise<CrossLinkOutput[]>;
   regressionForensics: (params: {
     spans: SpanInput[];
     lookback?: number;
+    /**
+     * cross-repo/v1.0.0: S3 算出的跨仓 ContractLink. 让 S4 也对每个 partner 仓的 handler 文件
+     * 跑 git log → 多仓 suspects 合并按时间排序. dep 实现可选; 实现忽略此字段就退化到单仓 S4.
+     */
+    crossLinks?: CrossLinkOutput[];
   }) => Promise<S4Output>;
   genE2ETests: (params: {
     target_uid: string;
@@ -200,10 +252,20 @@ export interface OrchestratorDeps {
     blastRadiusFiles: string[];
     suspectCommit?: { hash: string; subject?: string; diff?: string };
     issueRef?: string;
+    /** cross-repo/v1.0.0: 跨仓 partner. 空数组 = 单仓 (默认). */
+    crossRepoPartners?: Array<{
+      repoAlias: string;
+      localPath: string;
+      handlerFilePath: string;
+      handlerName: string;
+      contractId: string;
+      confidence: number;
+    }>;
   }) => Promise<{
     ok: boolean;
-    fixFiles: Array<{ path: string; content: string }>;
-    testFiles: Array<{ path: string; content: string }>;
+    /** 主仓的 patch repo 字段省略; 跨仓 patch 填 partner alias */
+    fixFiles: Array<{ path: string; content: string; repo?: string }>;
+    testFiles: Array<{ path: string; content: string; repo?: string }>;
     reasoning: string;
     abort?: boolean;
     reason?: string;

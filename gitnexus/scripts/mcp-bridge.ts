@@ -391,3 +391,244 @@ export async function pingEvalServer(
     return { ok: false, repos: [], error: (e as Error).message };
   }
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// Cross-repo bridge (cross-repo/v1.0.0 — DIY 替代 lbug group sync)
+//
+// 为什么 DIY: Intel Mac 缺 @ladybugdb/core-darwin-x64 prebuilt, group sync 走不通.
+// 用户已提 ladybugdb MR 补 darwin-x64; 等新版本发布后切回原生 ContractLink 注册表
+// (跟踪 task #14, docs/backlog/gitnexus-version-sync.md).
+//
+// 算法 (cypher-only, 50 行):
+//   1. parseContractId → pathSegments
+//   2. deriveHandlerNameCandidates → ['create', 'Create', 'createPost', 'CreatePosts', ...]
+//   3. cypher 在 partner 仓查 Method+Function 双 label, name 匹配 + filePath 含 parentSeg
+//   4. 兜底 fallback: 去掉 filePath 过滤, 仅 name 匹配
+//
+// KuzuDB 1.4.1 read-only 守卫 bug: 字符串字面量含 "create"/"delete" 等关键字会被误拦,
+// 用 STARTS WITH + ENDS WITH 拆分绕开 (见 safeNameEqualsClause).
+// ──────────────────────────────────────────────────────────────────────────
+
+const READ_ONLY_GUARD_KEYWORDS = [
+  'create',
+  'delete',
+  'merge',
+  'remove',
+  'drop',
+  'alter',
+  'copy',
+  'detach',
+];
+
+/**
+ * KuzuDB 1.4.1 eval-server 的 read-only 守卫会把字符串字面量里的写关键字也当成 cypher 写操作拦截.
+ * 这是 server bug. 当 name 含 guard 关键字时, 用 STARTS WITH / ENDS WITH 拆字符串绕开.
+ */
+export function safeNameEqualsClause(name: string, alias: string): string {
+  const lower = name.toLowerCase();
+  const hasGuardKw = READ_ONLY_GUARD_KEYWORDS.some((kw) => lower.includes(kw));
+  if (!hasGuardKw) return `${alias}.name = "${escLiteral(name)}"`;
+  if (name.length <= 2) {
+    return `${alias}.name STARTS WITH "${escLiteral(name)}"`;
+  }
+  const headLen = Math.min(3, Math.floor(name.length / 2));
+  const head = name.slice(0, headLen);
+  const tail = name.slice(-Math.min(3, name.length - headLen));
+  return `${alias}.name STARTS WITH "${escLiteral(head)}" AND ${alias}.name ENDS WITH "${escLiteral(tail)}"`;
+}
+
+export interface ContractParts {
+  /** HTTP method, 大写; 缺省时 undefined */
+  method?: string;
+  /** path 段, 已剥离前后 / 和 query string. e.g. ['api', 'cses', 'posts', 'create'] */
+  pathSegments: string[];
+  /** 重组的标准化 path. e.g. '/api/cses/posts/create' */
+  rawPath: string;
+}
+
+/**
+ * 解析 contractId — 支持 3 种格式:
+ *   · 'POST /api/cses/posts/create'  (S2 normalizer 输出)
+ *   · 'http::POST::/api/cses/posts/create'  (extractor 内部)
+ *   · '/api/cses/posts/create'  (无 method)
+ */
+export function parseContractId(contractId: string): ContractParts {
+  const trimmed = contractId.trim();
+  let s = trimmed;
+  let method: string | undefined;
+  const httpPrefix = /^http::([A-Z]+)::(.*)$/.exec(s);
+  if (httpPrefix) {
+    method = httpPrefix[1];
+    s = httpPrefix[2];
+  } else {
+    const m = /^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+(.*)$/i.exec(s);
+    if (m) {
+      method = m[1].toUpperCase();
+      s = m[2];
+    }
+  }
+  s = s.replace(/\?.*$/, '');
+  const cleaned = s.replace(/^\/+/, '').replace(/\/+$/, '');
+  const pathSegments = cleaned.split('/').filter(Boolean);
+  const rawPath = pathSegments.length > 0 ? '/' + pathSegments.join('/') : '/';
+  return { method, pathSegments, rawPath };
+}
+
+/**
+ * 从 path 段推断 handler 函数名候选, **按优先级降序**:
+ *   ['api','cses','posts','create'] →
+ *     ['createPost','CreatePost','createPosts','CreatePosts','create','Create']
+ *
+ * 第 0 个 (last + cap(parentSing)) 是最常见命名约定 (Go/Java REST handler 几乎都这样).
+ * 单段 last 放最末是兜底, 容易碰到通用动词假阳性.
+ */
+export function deriveHandlerNameCandidates(pathSegments: string[]): string[] {
+  if (pathSegments.length === 0) return [];
+  const last = pathSegments[pathSegments.length - 1];
+  const parent = pathSegments[pathSegments.length - 2] ?? '';
+  const cap = (s: string) => (s.length === 0 ? '' : s.charAt(0).toUpperCase() + s.slice(1));
+  const ordered: string[] = [];
+  if (parent) {
+    const parentSing = parent.endsWith('s') ? parent.slice(0, -1) : parent;
+    ordered.push(last + cap(parentSing)); // createPost  ← canonical
+    ordered.push(cap(last) + cap(parentSing)); // CreatePost
+    ordered.push(last + cap(parent)); // createPosts
+    ordered.push(cap(last) + cap(parent)); // CreatePosts
+  }
+  ordered.push(last);
+  ordered.push(cap(last));
+  // dedupe 但保序
+  const seen = new Set<string>();
+  return ordered.filter((n) => {
+    if (n.length === 0 || seen.has(n)) return false;
+    seen.add(n);
+    return true;
+  });
+}
+
+export interface CrossLink {
+  /** 发起方仓 (e.g. cses-java consumer) */
+  primaryRepo: string;
+  /** 目标方仓 (e.g. mattermost provider) */
+  partnerRepo: string;
+  /** 跨仓 contract id (HTTP method + path 风格) */
+  contractId: string;
+  /** partner 仓中匹配到的 handler */
+  partnerHandler: {
+    uid: string;
+    filePath: string;
+    name: string;
+    startLine?: number;
+    /** 节点 label, KuzuDB 1.4.1 区分 Method/Function (Go 顶层 func 是 Function) */
+    label: 'Method' | 'Function';
+  };
+  /** 命中策略: name+path / name-only / 都没命中走 grep (未实现) */
+  matchType: 'cypher-name+path' | 'cypher-name-only';
+  /** 0-1; cypher-name+path = 0.7, cypher-name-only = 0.4 (假阳性风险) */
+  confidence: number;
+}
+
+/**
+ * 跨仓 blast radius — 给一个 contractId, 在 partner 仓里找 provider handler.
+ *
+ * 不依赖 lbug bridge.lbug, 只用 eval-server cypher.
+ *
+ * 命中级别:
+ *   · cypher-name+path (confidence 0.7): 同时匹配 name + filePath 含 parent 段
+ *   · cypher-name-only (confidence 0.4): 仅 name 匹配, 假阳性高
+ *   · 没命中: 不返 entry, caller 自己判 cross-link 数量
+ */
+export async function crossBlastRadius(
+  opts: {
+    contractId: string;
+    primaryRepo: string;
+    partnerRepos: string[];
+  },
+  fetchImpl: typeof fetch = fetch,
+): Promise<CrossLink[]> {
+  const { pathSegments } = parseContractId(opts.contractId);
+  if (pathSegments.length === 0) return [];
+  const candidates = deriveHandlerNameCandidates(pathSegments);
+  if (candidates.length === 0) return [];
+  const parentSeg = pathSegments.length >= 2
+    ? pathSegments[pathSegments.length - 2]
+    : pathSegments[0];
+
+  const namePred = candidates.map((c) => safeNameEqualsClause(c, 'n')).join(' OR ');
+  const fileFilter = `n.filePath CONTAINS "${escLiteral(parentSeg)}" AND NOT n.filePath CONTAINS "test"`;
+
+  // 黑名单 — 常见 handler 噪音目录, 排序时降权.
+  const NOISE_DIR_KW = ['slashcommand', 'internal/', 'mock', 'fixture', 'auto_', 'sample', 'example'];
+
+  const links: CrossLink[] = [];
+  for (const partnerRepo of opts.partnerRepos) {
+    if (partnerRepo === opts.primaryRepo) continue;
+
+    // ① 同时查 Method + Function 两 label, 各取 5 行, 合并排序后挑最佳.
+    //   (单查 Method 容易碰到 *_test / slashcommands 假阳性)
+    const [methodR, fnR] = await Promise.all([
+      callCypher(
+        `MATCH (n:Method) WHERE (${namePred}) AND ${fileFilter} RETURN n.id AS id, n.name AS name, n.filePath AS file, n.startLine AS line LIMIT 5`,
+        partnerRepo,
+        fetchImpl,
+      ),
+      callCypher(
+        `MATCH (n:Function) WHERE (${namePred}) AND ${fileFilter} RETURN n.id AS id, n.name AS name, n.filePath AS file, n.startLine AS line LIMIT 5`,
+        partnerRepo,
+        fetchImpl,
+      ),
+    ]);
+
+    type Row = { id: string; name: string; file: string; line?: string; label: 'Method' | 'Function' };
+    let merged: Row[] = [
+      ...methodR.rows.map((r) => ({ ...r, label: 'Method' as const })),
+      ...fnR.rows.map((r) => ({ ...r, label: 'Function' as const })),
+    ] as Row[];
+    let matchType: CrossLink['matchType'] = 'cypher-name+path';
+
+    if (merged.length === 0) {
+      // 兜底: 去掉 path 过滤, 仅 name 匹配 (假阳性高 → confidence 降到 0.4)
+      const fbR = await callCypher(
+        `MATCH (n:Function) WHERE (${namePred}) AND NOT n.filePath CONTAINS "test" RETURN n.id AS id, n.name AS name, n.filePath AS file, n.startLine AS line LIMIT 5`,
+        partnerRepo,
+        fetchImpl,
+      );
+      merged = fbR.rows.map((r) => ({ ...r, label: 'Function' as const })) as Row[];
+      matchType = 'cypher-name-only';
+    }
+
+    if (merged.length === 0) continue;
+
+    // ② 排序: (a) 不含噪音目录优先 (b) Function 优先 over Method (c) candidate 优先级 (low index = canonical)
+    //         (d) filePath 短的优先 — 越靠近顶层目录越可能是 handler
+    const score = (r: Row): number => {
+      let s = 0;
+      const file = r.file ?? '';
+      const noisy = NOISE_DIR_KW.some((kw) => file.toLowerCase().includes(kw));
+      if (!noisy) s += 100; // 不含噪音 = +100
+      if (r.label === 'Function') s += 30; // Go 顶层 func 是 Function
+      // name match candidate 索引: 0 = canonical (createPost), 越靠后越通用易假阳性
+      const idx = candidates.findIndex((c) => c === r.name);
+      if (idx >= 0) s += (candidates.length - idx) * 10;
+      s -= file.length * 0.3; // 路径越短越优先 (打破 tie)
+      return s;
+    };
+    const best = [...merged].sort((a, b) => score(b) - score(a))[0];
+    const ln = Number(best.line);
+    links.push({
+      primaryRepo: opts.primaryRepo,
+      partnerRepo,
+      contractId: opts.contractId,
+      partnerHandler: {
+        uid: best.id ?? '',
+        filePath: best.file ?? '',
+        name: best.name ?? '',
+        startLine: Number.isFinite(ln) ? ln : undefined,
+        label: best.label,
+      },
+      matchType,
+      confidence: matchType === 'cypher-name+path' ? 0.7 : 0.4,
+    });
+  }
+  return links;
+}

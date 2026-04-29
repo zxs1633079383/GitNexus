@@ -184,7 +184,9 @@ export function renderReportToComment(
       const o = r.output as any;
       const uid = o.target_uid ?? '(unknown)';
       const files: string[] = Array.isArray(o.files) ? o.files : [];
-      const cross: any[] = Array.isArray(o.cross) ? o.cross : [];
+      // crossLinks (cross-repo/v1.0.0 真 DIY bridge 输出) + cross (旧字段, 兼容)
+      const crossLinks: any[] = Array.isArray(o.crossLinks) ? o.crossLinks : [];
+      const crossOld: any[] = Array.isArray(o.cross) ? o.cross : [];
       L.push(`**${uid}**`);
       if (files.length > 0) {
         L.push(`- 受影响文件 (${files.length}):`);
@@ -194,9 +196,20 @@ export function renderReportToComment(
         }
         if (files.length > 8) L.push(`  - _… ${files.length - 8} more_`);
       }
-      if (cross.length > 0) {
-        L.push(`- 跨仓影响 (${cross.length} 边):`);
-        for (const c of cross.slice(0, 5)) {
+      if (crossLinks.length > 0) {
+        L.push(`- 🌐 跨仓 ContractLink (${crossLinks.length}):`);
+        for (const c of crossLinks.slice(0, 5)) {
+          const ph = c.partnerHandler ?? {};
+          const conf = typeof c.confidence === 'number' ? c.confidence.toFixed(2) : '?';
+          L.push(
+            `  - \`${c.partnerRepo}\` → \`${ph.filePath ?? '?'}:${ph.startLine ?? '?'}\` (${ph.name ?? '?'}, ${c.matchType}, conf=${conf})`,
+          );
+          if (c.contractId) L.push(`    contract: \`${c.contractId}\``);
+        }
+      }
+      if (crossOld.length > 0) {
+        L.push(`- 跨仓影响 (旧 schema, ${crossOld.length} 边):`);
+        for (const c of crossOld.slice(0, 5)) {
           L.push(
             `  - \`${(c as any).repo ?? '?'}\` → \`${(c as any).uid ?? '?'}\` (${(c as any).risk ?? '?'})`,
           );
@@ -216,22 +229,42 @@ export function renderReportToComment(
   } else {
     const o = report.s4_forensics.output as any;
     const suspects: any[] = Array.isArray(o.suspects) ? o.suspects : [];
-    if (suspects.length === 0) {
+    const partnerSuspects: any[] = Array.isArray(o.partnerSuspects) ? o.partnerSuspects : [];
+    if (suspects.length === 0 && partnerSuspects.length === 0) {
       L.push('_无嫌疑 commit_' + (o.note ? ` (${o.note})` : ''));
     } else {
-      // 兼容两种 suspect 形态:
-      //  · v1.0.2 真 git log: { hash, subject, author, date }
-      //  · 旧 mock: { commitHash, confidence, symbolUid, timeAgoSec }
-      L.push('| commit | subject / symbol | author / 时间 |');
-      L.push('|---|---|---|');
-      for (const s of suspects.slice(0, 5)) {
-        const hash = s.hash ?? s.commitHash ?? '?';
-        const subject = (s.subject ?? s.symbolUid ?? '?').toString().slice(0, 80).replace(/\|/g, '\\|');
-        const author = s.author ?? (s.confidence != null ? `(conf ${(s.confidence ?? 0).toFixed(2)})` : '?');
-        const when = s.date ?? (s.timeAgoSec ? `${(s.timeAgoSec / 3600).toFixed(1)}h ago` : '?');
-        L.push(`| \`${String(hash).slice(0, 8)}\` | ${subject} | ${author} · ${when} |`);
+      if (suspects.length > 0) {
+        L.push('**主仓嫌疑 commit**');
+        // 兼容两种 suspect 形态:
+        //  · v1.0.2 真 git log: { hash, subject, author, date }
+        //  · 旧 mock: { commitHash, confidence, symbolUid, timeAgoSec }
+        L.push('| commit | subject / symbol | author / 时间 |');
+        L.push('|---|---|---|');
+        for (const s of suspects.slice(0, 5)) {
+          const hash = s.hash ?? s.commitHash ?? '?';
+          const subject = (s.subject ?? s.symbolUid ?? '?').toString().slice(0, 80).replace(/\|/g, '\\|');
+          const author = s.author ?? (s.confidence != null ? `(conf ${(s.confidence ?? 0).toFixed(2)})` : '?');
+          const when = s.date ?? (s.timeAgoSec ? `${(s.timeAgoSec / 3600).toFixed(1)}h ago` : '?');
+          L.push(`| \`${String(hash).slice(0, 8)}\` | ${subject} | ${author} · ${when} |`);
+        }
+        if (o.handlerFile) L.push(`> _git log -- ${o.handlerFile}_`);
       }
-      if (o.handlerFile) L.push(`> _git log -- ${o.handlerFile}_`);
+      // cross-repo/v1.0.0: partner 仓嫌疑 commit (按 partner 分组)
+      for (const grp of partnerSuspects) {
+        const ps: any[] = Array.isArray(grp.suspects) ? grp.suspects : [];
+        if (ps.length === 0) continue;
+        L.push('');
+        L.push(`**🌐 partner \`${grp.partnerRepo}\` 嫌疑 commit** (${grp.partnerFilePath})`);
+        L.push('| commit | subject | author / 时间 |');
+        L.push('|---|---|---|');
+        for (const s of ps.slice(0, 5)) {
+          const hash = s.hash ?? '?';
+          const subject = (s.subject ?? '?').toString().slice(0, 80).replace(/\|/g, '\\|');
+          const author = s.author ?? '?';
+          const when = s.date ?? '?';
+          L.push(`| \`${String(hash).slice(0, 8)}\` | ${subject} | ${author} · ${when} |`);
+        }
+      }
       if (o.note) L.push(`> _${o.note}_`);
     }
   }
@@ -349,6 +382,7 @@ function countBlastCross(report: PipelineReport): number {
   for (const r of report.s3_blast) {
     if (r.status !== 'ok' || !r.output) continue;
     const o = r.output as any;
+    if (Array.isArray(o.crossLinks)) n += o.crossLinks.length;
     if (Array.isArray(o.cross)) n += o.cross.length;
   }
   return n;

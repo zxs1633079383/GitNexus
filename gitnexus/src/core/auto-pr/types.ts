@@ -124,6 +124,18 @@ export interface AutoPRResult {
   rejectedReason?: string;
   /** 实际用的 branch（可能加了 ts 后缀） */
   finalBranch: string;
+  /**
+   * cross-repo/v1.0.0: 跨仓 partner MR 结果. 每条对应 LLM 在 partner 仓产出 patch 后调一次 autoPR.
+   *
+   * 主仓 PR 失败不会阻止 partner; partner 失败也不阻止主仓 (各自独立计算 stages).
+   * 单仓模式下省略.
+   */
+  crossRepoPRs?: Array<{
+    partnerAlias: string;
+    /** partner 仓 GitLab/GitHub fullName, e.g. cses/go/mattermost. */
+    partnerFullName: string;
+    result: AutoPRResult;
+  }>;
 }
 
 export interface AutoPRStage {
