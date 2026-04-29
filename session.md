@@ -2,7 +2,7 @@
 
 > **写给下一个 Claude 会话**：读完本文 + `RULES.md` + roadmap §0-§2，就能直接动手做所有功能。
 > 本文不重复 roadmap 内容，只提供"去哪读 + 现在做什么 + 怎么做 + DOD"。
-> 最后更新：2026-04-28
+> 最后更新：**2026-04-29（MVP v1.1.0 + 真 Jaeger 端到端验证完成）**
 
 ---
 
@@ -390,31 +390,56 @@ Agentic-Devops 仓 (镜像, 非 git): /Users/mac28/workspace/ai-workspace/Agenti
 
 ---
 
-## 13. 状态总览
+## 13. 状态总览（2026-04-29 MVP v1.1.0）
 
 ```
-✅ 路线图 v2（770 行，2 轮 review 全过）
-✅ Mermaid 可视化（双仓副本）
-✅ session.md（本文）
-✅ RULES.md（205 行自律守则）
-✅ 真实 trace fixture（/tmp/jaeger-trace.json）
+✅ 路线图 v2 (含闭环跑通审计表 + 平台支持总览)
+✅ Mermaid 可视化 (全部 ✅ 标绿)
+✅ session.md (本文，本次更新)
+✅ RULES.md
+✅ R-2 / R-3 / R-4 全部锁定 (用户已拍板)
 ─────────────────────────────────────────
-🟡 待用户拍板：R-2 / R-3 / R-4（锁 Stage 6/7）
-🟢 立即可开工：Phase 0（Stage 2）— 不依赖任何待拍板
-🟢 立即可开工：P2 / P6 / P3（并行线，不抢主链路）
+✅ MVP v1.0.0  完整 7 阶段闭环代码 + tag
+✅ MVP v1.1.0  Jaeger 真接入 + 路线图闭环审计
+─────────────────────────────────────────
+真实 e2e 验证 (3 次 tag):
+  · e2e/v0.1.0-yundiz       git.yundiz.com 单次真 MR (issue #2/#3)
+  · e2e/v0.2.0-overnight    隔夜 13 维度 100% 通过 (issue #4-#6)
+  · e2e/v0.3.0-real-jaeger  真 Jaeger trace 全链路 (issue #7)
+─────────────────────────────────────────
+backlog (并行线，不阻塞闭环):
+  · S6.2 image-injector R-2 4 级降级
+  · P2 Multi-hop crossDepth>1
+  · P3 Auto Wiki 刷新
+  · P6 OCaml LanguageProvider
+  · 业务仓 GitNexus 索引 (S3-S5 真跑前置)
 ```
 
 ---
 
-## 14. Git 历史（路线图分支 6 commits）
+## 14. Git 历史 (按 tag 分组，17 个 milestone)
 
 ```
-b2d0f9d7  docs(roadmap): 合入 Stage 5/6/7 第二轮 review 修正
-d9e6af3a  docs(roadmap): §0.2 加 mermaid 7 阶段闭环可视化
-83d9a8e6  docs(roadmap): 重构为 7 阶段 Agentic DevOps 闭环（团队自建版）
-3031f670  docs(roadmap): §0.2 重画为 /observe 触发的全自动管线
-1966c12d  docs(roadmap): 修正 §0.2 闭环图聚焦运行时侧
-8415cde5  docs(roadmap): 新增 Agentic DevOps 企业版路线图 v2
+mvp/v1.0.0              ⭐ 完整 7 阶段闭环 MVP
+mvp/v1.1.0              ⭐ Jaeger 真接入 + 闭环审计
+
+phase-0/v0.1.0          S2 Trace2Code Resolver
+stage-1/v0.1.0          P1 Auto-reindex Webhook (GitHub HMAC)
+stage-1/v0.2.0-gitlab   GitLab webhook 路由
+stage-3/v0.1.0          S3 api_blast_radius
+stage-4/v0.1.0          S4 Auto Regression Forensics
+stage-5/v0.1.0          S5 E2E Test Generator
+stage-6/v0.1.0          S6 K8s Preview Env (R-3 异步)
+stage-7/v0.1.0          S7 Auto-PR/MR (GitHub + GitLab)
+stage-7/v0.2.0-gitee    Gitee PR provider
+
+pipeline/v0.1.0         Orchestrator dry-run
+pipeline/v0.2.0         S2-S7 全真跑
+pipeline/v0.3.0         issue.opened webhook 真闭环
+
+e2e/v0.1.0-yundiz       真 git.yundiz.com 单次验证
+e2e/v0.2.0-overnight    隔夜 13 维度
+e2e/v0.3.0-real-jaeger  真 Jaeger 端到端
 ```
 
 未 push 到 remote。push 时机由用户决定。
@@ -432,13 +457,198 @@ d9e6af3a  docs(roadmap): §0.2 加 mermaid 7 阶段闭环可视化
 
 第一句对话建议这样开：
 
-> 我接力上一个会话，目标是完成"团队自建版 GitNexus 企业版"7 阶段 Agentic DevOps 闭环。
-> 我已经读完 `/Users/mac28/workspace/java/zlc_ai/GitNexus/session.md` 和 `RULES.md`，
-> 知道当前在 `docs/agentic-devops-roadmap-v2` 分支，第一刀是 Phase 0。
+> 我接力上一个会话，目标是把 GitNexus Agentic DevOps 7 阶段闭环 MVP 落到业务仓。
+> 已读完 session.md + RULES.md。当前在 `feat/jaeger-span-normalizer` 分支，
+> MVP v1.1.0 已 tag，真 Jaeger e2e 跑通。剩余 backlog 是并行线 + 业务仓接入。
 > 用户接下来希望 [X]。
 
-把 [X] 替换成：
-- "我直接开始 Phase 0" 或
-- "我先拍板 R-2/R-3/R-4" 或
-- "我开始 P2 并行线" 或
-- 其他具体动作
+[X] 候选：
+- "用 GitNexus 索引一下业务仓 X，让 S3-S5 也真跑"
+- "做 S6.2 image-injector"  / "做 P2 多跳" / "做 P3 wiki 刷新" / "做 P6 OCaml"
+- "在生产 issue 上跑一次 live PR"
+
+---
+
+## 17. 🚀 新仓 / 跨仓 group 接入快速指南
+
+### A. 单仓接入（5 分钟）
+
+**前提**：你已经知道仓 URL + 可拉的 token。
+
+```bash
+# 1. clone + index 仓 (让 GitNexus 算 blast radius / 建 contract registry)
+cd /Users/mac28/workspace/java/zlc_ai/GitNexus/gitnexus
+gitnexus analyze --path /path/to/your/repo
+# 或者用 URL 自动 clone
+gitnexus analyze --url http://git.yundiz.com/owner/repo.git
+
+# 2. 启动 GitNexus 服务（含 webhook + MCP）
+export GITNEXUS_GITLAB_SECRET=<webhook 密码>           # 你自定义
+export GITNEXUS_AUTOPR_TOKEN=<gitlab PAT>              # contents:write
+export GITNEXUS_PROVIDER=gitlab
+export GITLAB_API_BASE=http://git.yundiz.com/api/v4    # 内网用
+export JAEGER_QUERY_BASE=http://192.168.6.66:32281     # /observe 触发用
+gitnexus serve --port 8080 --host 0.0.0.0
+
+# 3. 仓库 Settings → Webhooks 添加
+#    URL: http://<server-ip>:8080/webhook/gitlab
+#    Secret token: 同 GITNEXUS_GITLAB_SECRET
+#    Events: 勾 Issues + Push + Merge requests
+#    SSL verification: 看你 server 协议
+
+# 4. 让 /observe 自动建 issue (body 嵌 metadata 块)
+#    见 §17.D 模板
+```
+
+**验证**：往该仓建一个测试 issue（body 含 metadata），看是否自动出 GitNexus 评论 + dryRun PR/MR。
+
+### B. 跨仓 group 接入（GitNexus 招牌能力）
+
+**用途**：A 仓改了 API contract → 自动算 B 仓 / C 仓被影响的 handler；S3 `api_blast_radius` 走 `cross_depth>=1` 跨仓 BFS。
+
+```bash
+# 1. 创建 group 目录 + 注册多个仓
+gitnexus group create --name yundiz-prod
+gitnexus group add --group yundiz-prod --repo /path/to/repo-A
+gitnexus group add --group yundiz-prod --repo /path/to/repo-B
+gitnexus group add --group yundiz-prod --repo /path/to/repo-C
+
+# 2. 一次性 group analyze（自动建跨仓 contract registry + bridge.lbug）
+gitnexus group analyze --group yundiz-prod
+# 这一步会:
+#   · 索引每个仓的 Route / RPCMethod / TopicProducer / SQLTable 节点
+#   · 收集成 group 级 contract-registry/contracts.csv
+#   · 建立 bridge.lbug 跨仓边 (HTTP route ↔ HTTP consumer / proto / Kafka topic / SQL table)
+
+# 3. 跨仓 blast radius 查询验证
+gitnexus mcp --tool api_blast_radius --params '{
+  "target_uid": "Method:OrderService.createOrder",
+  "direction": "both",
+  "depth": 2,
+  "cross_depth": 1
+}'
+# 期望返回里 cross[] 字段含其他仓被影响的 handler
+
+# 4. webhook 配置：每个仓单独配 webhook → 同一个 server
+#    不同仓互相之间的影响通过 group bridge 算
+```
+
+**Group 工作原理**（一句话）：每个仓 push → P1 自动 reindex → contract-registry 重算 → bridge.lbug 自动更新 → 下次 `api_blast_radius` 命中真跨仓边。
+
+### C. 三平台 webhook 配置速查（同一 server 可并存）
+
+| 平台 | 路由 | 鉴权头 | 鉴权模式 | env 变量 |
+|---|---|---|---|---|
+| GitHub | `/webhook/github` | `X-Hub-Signature-256: sha256=...` | HMAC sha256 | `GITNEXUS_WEBHOOK_SECRET` |
+| GitLab | `/webhook/gitlab` | `X-Gitlab-Token: <secret>` | 明文 | `GITNEXUS_GITLAB_SECRET` |
+| Gitee | `/webhook/gitee` | `X-Gitee-Token: <secret>` | 明文（"密码"模式）| `GITNEXUS_GITEE_SECRET` |
+
+**最少配置** — 只用某一个平台：只设它的 secret + provider env 即可，其他路由 404 不挂。
+
+### D. /observe 建 issue 的 metadata 块模板
+
+issue body 必须含 `<!-- gitnexus:trace --> ... <!-- /gitnexus:trace -->` 块。
+**最简版（让 jaeger-fetcher 自动拉 spans）**：
+
+```markdown
+## 巡检告警
+
+<!-- gitnexus:trace -->
+{
+  "repo": "owner/your-repo",
+  "baseBranch": "main",
+  "traceUrl": "http://192.168.6.66:32281/trace/<traceId>"
+}
+<!-- /gitnexus:trace -->
+```
+
+**完整版（带 S6 真 K8s 验证）**：
+
+```markdown
+<!-- gitnexus:trace -->
+{
+  "repo": "owner/repo",
+  "baseBranch": "main",
+  "traceUrl": "http://192.168.6.66:32281/trace/<traceId>",
+  "serviceImage": "harbor.jinqidongli.com/x9-java/cses-server:1.3.20",
+  "testImage": "harbor.jinqidongli.com/x9-java/cses-test:1.3.20",
+  "testCommand": ["sh", "-c", "java -jar /test.jar"]
+}
+<!-- /gitnexus:trace -->
+```
+
+**字段表**：
+
+| 字段 | 必需 | 说明 |
+|---|---|---|
+| `repo` | ✅ | `owner/repo`，自动 PR/MR 目标 |
+| `baseBranch` | ⚪ | 默认 `main` |
+| `spans` | A/B 二选一 | 直接传 Jaeger spans 数组（不依赖 Jaeger 在线）|
+| `traceUrl` | A/B 二选一 | Jaeger 链路 URL；fetcher 自动拉 spans（需 `JAEGER_QUERY_BASE` env）|
+| `serviceImage` | ⚪ | 提供则触发 S6 真 K8s 验证；省略 S6 skip |
+| `testImage` | ⚪ | 默认与 serviceImage 一致 |
+| `testCommand` | 跟 serviceImage 配对 | sh -c 输出 `===JUNIT-XML=== ... ===END-JUNIT-XML===` 包夹 XML |
+
+### E. 默认安全闸（你不需要任何额外配置就生效）
+
+| 闸 | 行为 |
+|---|---|
+| `dryRun` 默认 true | issue 没 `gitnexus:auto-pr-live` 标签 → 永远不真发 PR/MR |
+| `require_stage6_pass` | S6 没绿勾 → 自动拒绝创建 PR + 评论解释（即使 live 标签在）|
+| auto-pr-policy 默认 | 自动 block `.github/workflows/**` / `.env*` / `.pem` / `.key` / `secrets/**` |
+| patch-llm systemPrompt | 硬编码不允许动 workflow / 凭证 / 引入新依赖 |
+| ns 前缀守门 | 所有 K8s 写操作必须命中 `gitnexus-preview-*` ns，否则代码层抛错 |
+
+### F. 真发 live PR/MR 的双因子开关
+
+```bash
+export GITNEXUS_AUTOPR_LIVE=1
+# 同时 issue 上加 'gitnexus:auto-pr-live' 标签
+# 还需要 S6 真给绿勾 (require_stage6_pass)
+```
+
+三个条件**同时满足**才会真发。少一个都不会上生产副作用。
+
+---
+
+## 18. Jaeger 真接入 (2026-04-29 落地, e2e/v0.3.0-real-jaeger)
+
+### 18.1 一行配置启用
+
+```bash
+export JAEGER_QUERY_BASE=http://192.168.6.66:32281    # 你的 jaeger query NodePort
+```
+
+issue body 给 `traceUrl` (不必嵌 spans)，pipeline 自动 `GET /api/traces/<id>` 拉真 spans。
+
+### 18.2 Jaeger Query API 兼容性
+
+`jaeger-fetcher.ts` 走 HTTP Query API：
+- `GET /api/traces/<traceId>` → `{ data: [{ spans: [...] }] }`
+- 兼容 Jaeger v1 / v2 (OTel collector distribution，jaeger_query 扩展)
+
+### 18.3 真验证产物
+
+| 项 | 值 |
+|---|---|
+| 拉的 trace | `291393efa15b1778` (mattermost) |
+| 真 spans 数 | **8** |
+| Phase 0 normalize 真产出 | `kind=http`, `contractId=http::POST::/api/cses/posts/create` |
+| issue | http://git.yundiz.com/zhanglichao/devops-test-backend/-/issues/7 |
+| comment | `#note_706`（评论里含完整 7 阶段 markdown 报告）|
+| 端到端耗时 | 129.8s |
+
+### 18.4 业务仓 GitNexus 索引前的限制
+
+S2 normalize 真接，但 **handler UID 反查**仍兜底（用 contractId 当 UID）。
+要让 S3-S5 真跑必须：
+
+```bash
+gitnexus analyze --url <业务仓>     # 让 GitNexus 索引业务仓代码
+```
+
+之后 `resolveSpanToHandler` 才能从 `Route` 节点反查到真实 `Method:XxxController.xxx` UID，
+`api_blast_radius` 才能真算业务仓内部影响 + 跨仓 contract 影响，
+`regression_forensics` 才能从真实 git log 找嫌疑 commit。
+
+业务仓索引一次后，整条链路 100% 真跑。
