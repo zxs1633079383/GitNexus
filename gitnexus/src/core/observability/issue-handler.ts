@@ -67,7 +67,12 @@ export function buildPipelineInput(args: BuildPipelineInputArgs): PipelineInput 
     return null;
   }
   const repoStr = args.block.repo ?? args.fullName;
-  const [owner, repo] = repoStr.split('/');
+  // GitLab 支持多级 namespace (group/subgroup/project)，如 cses/java/cses/cses
+  // 用 lastIndexOf('/') 拆: owner = 前 N-1 段, repo = 最后一段
+  const slashIdx = repoStr.lastIndexOf('/');
+  if (slashIdx <= 0) return null;
+  const owner = repoStr.slice(0, slashIdx);
+  const repo = repoStr.slice(slashIdx + 1);
   if (!owner || !repo) return null;
 
   const prTarget: S7AutoPRInput = {
@@ -252,7 +257,10 @@ export async function handleIssueOpened(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     // 即便 pipeline 抛错，也要回评一条让开发者知道
-    const [owner, repo] = (block.repo ?? args.fullName).split('/');
+    const __r = (block.repo ?? args.fullName);
+    const __i = __r.lastIndexOf('/');
+    const owner = __i > 0 ? __r.slice(0, __i) : '';
+    const repo = __i > 0 ? __r.slice(__i + 1) : '';
     if (owner && repo) {
       try {
         await deps.postIssueComment({
@@ -272,7 +280,10 @@ export async function handleIssueOpened(
     issueNumber: args.issueNumber,
     traceUrl: block.traceUrl,
   });
-  const [owner, repo] = (block.repo ?? args.fullName).split('/');
+  const __r2 = (block.repo ?? args.fullName);
+  const __i2 = __r2.lastIndexOf('/');
+  const owner = __i2 > 0 ? __r2.slice(0, __i2) : '';
+  const repo = __i2 > 0 ? __r2.slice(__i2 + 1) : '';
   let commentUrl: string | undefined;
   if (owner && repo) {
     try {
