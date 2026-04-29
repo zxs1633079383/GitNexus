@@ -218,6 +218,21 @@ export async function handleIssueOpened(
     return { ok: true, pipelineStarted: false, reason: 'no gitnexus:trace metadata block' };
   }
 
+  // L.5: 如 block.spans 缺但有 traceUrl + JAEGER_QUERY_BASE 配了 → 自动从 Jaeger 拉
+  if ((!block.spans || block.spans.length === 0) && block.traceUrl) {
+    const jaegerBase = process.env.JAEGER_QUERY_BASE;
+    if (jaegerBase) {
+      const { resolveSpansFromBlock } = await import('./jaeger-fetcher.js');
+      const r = await resolveSpansFromBlock(
+        block as { spans?: any[]; traceUrl?: string },
+        { jaegerBaseUrl: jaegerBase },
+      );
+      if (r) {
+        block.spans = r.spans as SpanInput[];
+      }
+    }
+  }
+
   const live = args.issueLabels.includes(LIVE_LABEL);
   const input = buildPipelineInput({
     block,
@@ -228,7 +243,7 @@ export async function handleIssueOpened(
     defaultBaseBranch: args.defaultBaseBranch,
   });
   if (!input) {
-    return { ok: false, pipelineStarted: false, reason: 'invalid metadata: spans missing' };
+    return { ok: false, pipelineStarted: false, reason: 'invalid metadata: spans missing (and Jaeger fetch failed)' };
   }
 
   let report: PipelineReport;
