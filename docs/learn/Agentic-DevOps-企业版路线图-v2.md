@@ -106,7 +106,7 @@ flowchart TB
 
 | # | 主链路前置 / 配套 | 状态 | 备注 |
 |---|---|---|---|
-| A | S2 真拉 Jaeger trace | ✅ 代码就绪 / ⏸ 等环境 | jaeger-fetcher.ts 已写；用户 pre 集群 jaeger-v2 pod CrashLoopBackOff（ES NetworkPolicy 受限），修好 + 配 JAEGER_QUERY_BASE 后立即真跑 |
+| A | S2 真拉 Jaeger trace | ✅ **真跑通 (2026-04-29)** | jaeger-fetcher.ts 真接 jaeger-v2 (修好 NetworkPolicy 后)；e2e 拉真 trace `291393efa15b1778` 8 spans + normalize → contractId=`http::POST::/api/cses/posts/create`；issue #7 真喂 8 spans 进 pipeline |
 | B | 业务仓 GitNexus 索引 | ⏸ 等业务仓 | S2/S3/S4/S5 真跑需要业务仓被 GitNexus 索引；隔夜 e2e 用 mock 替代验证链路 |
 | C | 业务镜像可拉 (S6 真验证) | ⏸ 等业务接 CI | S6 用了 busybox:1.36 fixture；真业务镜像（harbor.jinqidongli.com/x9-...）等运维提供 |
 
