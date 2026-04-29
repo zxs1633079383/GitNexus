@@ -98,6 +98,16 @@ git fetch upstream  &&  npm view gitnexus version
 | 桥接 fetch 报 `Cannot find tool 'impact'` | latest 改了 MCP 工具名 | bridge 适配层加路由表 |
 | KuzuDB schema 报 `Table X does not exist` | latest 改了 schema | 重 analyze + 看 schema diff |
 | webhook server 启动 lbug 报 dlopen 失败 | npm install 时 native build 没装好 | `cd gitnexus && npm install --build-from-source @ladybugdb/core` |
+| bridge 解析 cypher 返回 `rows: []` 但手动 curl 有数据 | eval-server 响应体 trailer 格式变 | 检查 `mcp-bridge.callCypher` 切 `\n---\n` 的逻辑是否还匹配；trailer 改 prefix 时同步 |
+| 调 `/tool/impact` 让 eval-server 直接死 | 1.4.1 的 known crash bug | bridge 不要碰 `/tool/impact`；走 cypher 自己算 blast radius |
+
+## 5.1 1.4.1 实测发现 (2026-04-29 落地 mvp/v1.2.0-bridge 时记录)
+
+- eval-server 真实路径: `POST /tool/{cypher,impact,context,query}` + `GET /health`（不是 `/api/*`）。
+- HTTP 响应是 `<JSON>\n---\nNext: <hint>` 拼接体，需切 trailer 后再 `JSON.parse`。
+- `/tool/cypher` 稳定；`/tool/impact` 调一次让 server 死，绕开。
+- KuzuDB 1.4.1 schema 单一关系表 `CodeRelation`，无 `Route` 节点，无 `:HANDLES_ROUTE` 边。Method 反查靠 `Method.name + filePath/class`。
+- Method.id 格式: `Method:<filePath>:<name>:<startLine>`。
 
 ---
 

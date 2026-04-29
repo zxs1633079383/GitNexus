@@ -401,6 +401,7 @@ Agentic-Devops 仓 (镜像, 非 git): /Users/mac28/workspace/ai-workspace/Agenti
 ─────────────────────────────────────────
 ✅ MVP v1.0.0  完整 7 阶段闭环代码 + tag
 ✅ MVP v1.1.0  Jaeger 真接入 + 路线图闭环审计
+✅ MVP v1.2.0-bridge  webhook S2/S3 走全局 eval-server 真索引 (cypher-only, 替 4 处 mock)
 ─────────────────────────────────────────
 真实 e2e 验证 (3 次 tag):
   · e2e/v0.1.0-yundiz       git.yundiz.com 单次真 MR (issue #2/#3)
@@ -443,6 +444,8 @@ pipeline/v0.3.0         issue.opened webhook 真闭环
 e2e/v0.1.0-yundiz       真 git.yundiz.com 单次验证
 e2e/v0.2.0-overnight    隔夜 13 维度
 e2e/v0.3.0-real-jaeger  真 Jaeger 端到端
+
+mvp/v1.2.0-bridge       eval-server HTTP 桥接, S2/S3 真索引数据
 ```
 
 未 push 到 remote。push 时机由用户决定。
@@ -561,6 +564,30 @@ const deps: OrchestratorDeps = {
 - 监听 0.0.0.0:3034
 - LIVE 模式开着
 - 你单开窗口跑 eval-server 不会冲突（不同端口）
+
+### 15.5 实施落地 (2026-04-29, mvp/v1.2.0-bridge)
+
+落地差异（跟 §15.5 草案不同的几处）：
+
+1. **eval-server 实际 API 路径**：`POST /tool/{cypher,impact,context,query}` + `GET /health`（不是草案里假设的 `/api/impact`）。
+2. **响应不是纯 JSON**：eval-server 回 `{json}\n---\nNext: <hint>` 拼接体, bridge 必须切掉 `\n---\n` 之后的 trailer 才能 `JSON.parse`。已修在 `mcp-bridge.callCypher`。
+3. **`/tool/impact` 在 1.4.1 有 crash bug**：调一次让 server 死。bridge 改用 `/tool/cypher` 走 `MATCH (m:Method {name})<-[*1..N]-(caller)` 自己算 blast radius（关系表只有 `CodeRelation` 一种）。
+4. **cses-java 1.4.1 schema 没有 `Route` 节点**：草案里的 `MATCH (rt:Route)-[:HANDLES_ROUTE]-(m:Method)` 跑不通。改用 `Method.name + filePath/className` 三层 fallback 反查（`mcp-bridge.resolveHandler`）。
+5. **Method id 真格式**：`Method:<filePath>:<name>:<startLine>`（不是 UID 风格的 `Method:Symbol_xxx`）。
+6. **验证**：`scripts/smoke-bridge.ts` 不依赖 webhook 重启，直接命中 fixture #1 — 真 `TaskMemberReader.java:93` + 25 个真业务 caller 文件。
+
+剩余的"在 cses-java 建 issue 看 MR 报告"DOD 需要重启 webhook server 用上新 deps（保持原 LIVE 模式 env）：
+
+```bash
+# 老 server 含 LIVE secrets，stop 时记得保留
+GITNEXUS_GITLAB_SECRET=<原值>  GITNEXUS_AUTOPR_TOKEN=<原值>  \
+GITNEXUS_AUTOPR_LIVE=1  GITNEXUS_PROVIDER=gitlab  \
+JAEGER_QUERY_BASE=http://192.168.6.66:32281  \
+GITNEXUS_BRIDGE_REPO=cses-java  \
+npx tsx scripts/start-webhook-server.ts
+```
+
+启动会打印 `bridge ✅ eval-server 通` 行；以后 issue 触发的 pipeline S2/S3/S5 自动走 bridge。
 
 ---
 
