@@ -1,13 +1,14 @@
-// Express webhook 路由挂载点 — POST /webhook/github
+// Express webhook 路由挂载点
 //
-// 职责：
-//   1) raw body 收集（HMAC 必须用原始字节）
-//   2) HMAC 验签
-//   3) 事件解析
-//   4) 调用 trigger 回调（由 api.ts 注入 → 调 JobManager.createJob + fork worker）
-//   5) 返回 202 + 摘要 JSON
+// 路由:
+//   POST /webhook/github  (HMAC sha256, X-Hub-Signature-256)
+//   POST /webhook/gitlab  (X-Gitlab-Token 明文, timingSafeEqual)
+//   POST /webhook/gitee   (X-Gitee-Token 明文, timingSafeEqual)
+//   POST /webhook         别名: 按请求头 X-Gitlab-Event / X-Gitee-Event /
+//                         X-GitHub-Event 自动 dispatch (用户配 webhook URL
+//                         不必带 provider 后缀)
 //
-// 注：未配置 githubSecret 时整条路由禁用；不会自动放行未签名请求（避免 misconfig 漏洞）。
+// 注：未配置任一 secret 时整条 /webhook 命名空间禁用，404 静默防 misconfig。
 
 import type { Express, Request, Response } from 'express';
 import express from 'express';
@@ -19,7 +20,7 @@ import {
 import { parseGitHubEvent } from './event-parser.js';
 import { parseGiteeEvent } from './event-parser-gitee.js';
 import { parseGitLabEvent } from './event-parser-gitlab.js';
-import type { WebhookMountOptions } from './types.js';
+import type { ParsedWebhookEvent, WebhookMountOptions } from './types.js';
 
 /** 把原始 Buffer 暴露在 req.rawBody 上，HMAC 验签需要。 */
 const rawBodySaver = (req: Request, _res: Response, buf: Buffer) => {
@@ -29,212 +30,164 @@ const rawBodySaver = (req: Request, _res: Response, buf: Buffer) => {
 };
 
 export function mountWebhookRoutes(app: Express, opts: WebhookMountOptions): void {
-  // 任一 secret 配置即挂 raw body parser；都没就完全跳过
   if (!opts.githubSecret && !opts.gitlabSecret && !opts.giteeSecret) return;
 
-  // 单独挂 raw body parser 在 /webhook/* 上 —— 不污染其他 JSON 路由。
   app.use('/webhook', express.json({ verify: rawBodySaver, limit: '1mb' }));
 
-  if (opts.githubSecret) mountGitHub(app, opts);
-  if (opts.gitlabSecret) mountGitLab(app, opts);
-  if (opts.giteeSecret) mountGitee(app, opts);
-}
+  if (opts.githubSecret) {
+    app.post('/webhook/github', (req, res) =>
+      handleGitHubRequest(req, res, opts),
+    );
+  }
+  if (opts.gitlabSecret) {
+    app.post('/webhook/gitlab', (req, res) =>
+      handleGitLabRequest(req, res, opts),
+    );
+  }
+  if (opts.giteeSecret) {
+    app.post('/webhook/gitee', (req, res) =>
+      handleGiteeRequest(req, res, opts),
+    );
+  }
 
-function mountGitHub(app: Express, opts: WebhookMountOptions): void {
-  const secret = opts.githubSecret!;
-
-  app.post('/webhook/github', async (req, res) => {
-    const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
-    const sigHeader = req.header('x-hub-signature-256') ?? undefined;
-    const eventName = req.header('x-github-event') ?? '';
-    const deliveryId = req.header('x-github-delivery') ?? undefined;
-
-    if (!rawBody) {
-      res.status(400).json({ error: 'empty body' });
-      return;
+  // 通用别名：按请求头自动 dispatch
+  app.post('/webhook', async (req, res) => {
+    if (req.header('x-gitlab-event') && opts.gitlabSecret) {
+      return handleGitLabRequest(req, res, opts);
     }
-
-    const verify = verifyGitHubSignature(secret, rawBody, sigHeader);
-    if (verify.ok === false) {
-      res.status(401).json({ error: `signature ${verify.reason}` });
-      return;
+    if (req.header('x-gitee-event') && opts.giteeSecret) {
+      return handleGiteeRequest(req, res, opts);
     }
-
-    // ping → 200 OK 静默
-    if (eventName === 'ping') {
-      res.status(200).json({ ok: true, kind: 'ping' });
-      return;
+    if (req.header('x-github-event') && opts.githubSecret) {
+      return handleGitHubRequest(req, res, opts);
     }
-
-    const event = parseGitHubEvent(eventName, req.body, deliveryId);
-    if (!event) {
-      res.status(202).json({ ok: true, kind: 'ignored', event: eventName });
-      return;
-    }
-
-    try {
-      // issue_opened 走独立 trigger（如果配置了）
-      if (event.kind === 'issue_opened') {
-        if (!opts.issueTrigger) {
-          res.status(202).json({
-            ok: true,
-            kind: 'issue_opened',
-            ignored: 'no issueTrigger configured',
-          });
-          return;
-        }
-        const r = await opts.issueTrigger(event);
-        res.status(202).json({
-          ok: r.ok,
-          kind: 'issue_opened',
-          repo: event.fullName,
-          issueNumber: event.issueNumber,
-          pipelineStarted: r.pipelineStarted,
-          reason: r.reason,
-          commentUrl: r.commentUrl,
-        });
-        return;
-      }
-
-      const result = await opts.trigger(event);
-      res.status(202).json({
-        ok: true,
-        kind: event.kind,
-        repo: event.fullName,
-        sha: event.headSha,
-        jobId: result.jobId,
-        status: result.status,
-        reason: result.reason,
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'trigger failed';
-      // 409 = 单槽冲突；其他归 500
-      const status = message.includes('already in progress') ? 409 : 500;
-      res.status(status).json({ ok: false, error: message });
-    }
+    res.status(400).json({
+      error:
+        'cannot detect provider — missing X-Gitlab-Event / X-Gitee-Event / X-GitHub-Event header',
+    });
   });
 }
 
-function mountGitLab(app: Express, opts: WebhookMountOptions): void {
-  const secret = opts.gitlabSecret!;
+// ─── 三 provider 入口（通用别名 + provider 后缀路由共享） ──────────
 
-  app.post('/webhook/gitlab', async (req, res) => {
-    const tokenHeader = req.header('x-gitlab-token') ?? undefined;
-    const eventHeader = req.header('x-gitlab-event') ?? '';
-    const deliveryId = req.header('x-gitlab-event-uuid') ?? undefined;
+async function handleGitHubRequest(
+  req: Request,
+  res: Response,
+  opts: WebhookMountOptions,
+): Promise<void> {
+  const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+  const sigHeader = req.header('x-hub-signature-256') ?? undefined;
+  const eventName = req.header('x-github-event') ?? '';
+  const deliveryId = req.header('x-github-delivery') ?? undefined;
 
-    // GitLab 默认走明文 token 模式 (X-Gitlab-Token 头)
-    const verify = verifyGitLabToken(secret, tokenHeader);
-    if (verify.ok === false) {
-      res.status(401).json({ error: `gitlab token ${verify.reason}` });
-      return;
-    }
-
-    const event = parseGitLabEvent(eventHeader, req.body, deliveryId);
-    if (!event) {
-      res.status(202).json({ ok: true, kind: 'ignored', event: eventHeader });
-      return;
-    }
-
-    try {
-      if (event.kind === 'issue_opened') {
-        if (!opts.issueTrigger) {
-          res.status(202).json({
-            ok: true,
-            kind: 'issue_opened',
-            ignored: 'no issueTrigger configured',
-          });
-          return;
-        }
-        const r = await opts.issueTrigger(event);
-        res.status(202).json({
-          ok: r.ok,
-          kind: 'issue_opened',
-          repo: event.fullName,
-          issueNumber: event.issueNumber,
-          pipelineStarted: r.pipelineStarted,
-          reason: r.reason,
-          commentUrl: r.commentUrl,
-        });
-        return;
-      }
-
-      const result = await opts.trigger(event);
-      res.status(202).json({
-        ok: true,
-        kind: event.kind,
-        repo: event.fullName,
-        sha: event.headSha,
-        jobId: result.jobId,
-        status: result.status,
-        reason: result.reason,
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'trigger failed';
-      const status = message.includes('already in progress') ? 409 : 500;
-      res.status(status).json({ ok: false, error: message });
-    }
-  });
+  if (!rawBody) {
+    res.status(400).json({ error: 'empty body' });
+    return;
+  }
+  const verify = verifyGitHubSignature(opts.githubSecret!, rawBody, sigHeader);
+  if (verify.ok === false) {
+    res.status(401).json({ error: `signature ${verify.reason}` });
+    return;
+  }
+  if (eventName === 'ping') {
+    res.status(200).json({ ok: true, kind: 'ping' });
+    return;
+  }
+  const event = parseGitHubEvent(eventName, req.body, deliveryId);
+  if (!event) {
+    res.status(202).json({ ok: true, kind: 'ignored', event: eventName });
+    return;
+  }
+  await dispatchEvent(res, opts, event);
 }
 
-function mountGitee(app: Express, opts: WebhookMountOptions): void {
-  const secret = opts.giteeSecret!;
+async function handleGitLabRequest(
+  req: Request,
+  res: Response,
+  opts: WebhookMountOptions,
+): Promise<void> {
+  const tokenHeader = req.header('x-gitlab-token') ?? undefined;
+  const eventHeader = req.header('x-gitlab-event') ?? '';
+  const deliveryId = req.header('x-gitlab-event-uuid') ?? undefined;
 
-  app.post('/webhook/gitee', async (req, res) => {
-    const tokenHeader = req.header('x-gitee-token') ?? undefined;
-    const eventHeader = req.header('x-gitee-event') ?? '';
-    const deliveryId = req.header('x-gitee-timestamp') ?? undefined;
+  const verify = verifyGitLabToken(opts.gitlabSecret!, tokenHeader);
+  if (verify.ok === false) {
+    res.status(401).json({ error: `gitlab token ${verify.reason}` });
+    return;
+  }
+  const event = parseGitLabEvent(eventHeader, req.body, deliveryId);
+  if (!event) {
+    res.status(202).json({ ok: true, kind: 'ignored', event: eventHeader });
+    return;
+  }
+  await dispatchEvent(res, opts, event);
+}
 
-    // Gitee 默认走明文密码模式 (X-Gitee-Token 头放共享 secret 原文)
-    const verify = verifyGiteeToken(secret, tokenHeader);
-    if (verify.ok === false) {
-      res.status(401).json({ error: `gitee token ${verify.reason}` });
-      return;
-    }
+async function handleGiteeRequest(
+  req: Request,
+  res: Response,
+  opts: WebhookMountOptions,
+): Promise<void> {
+  const tokenHeader = req.header('x-gitee-token') ?? undefined;
+  const eventHeader = req.header('x-gitee-event') ?? '';
+  const deliveryId = req.header('x-gitee-timestamp') ?? undefined;
 
-    const event = parseGiteeEvent(eventHeader, req.body, deliveryId);
-    if (!event) {
-      res.status(202).json({ ok: true, kind: 'ignored', event: eventHeader });
-      return;
-    }
+  const verify = verifyGiteeToken(opts.giteeSecret!, tokenHeader);
+  if (verify.ok === false) {
+    res.status(401).json({ error: `gitee token ${verify.reason}` });
+    return;
+  }
+  const event = parseGiteeEvent(eventHeader, req.body, deliveryId);
+  if (!event) {
+    res.status(202).json({ ok: true, kind: 'ignored', event: eventHeader });
+    return;
+  }
+  await dispatchEvent(res, opts, event);
+}
 
-    try {
-      if (event.kind === 'issue_opened') {
-        if (!opts.issueTrigger) {
-          res.status(202).json({
-            ok: true,
-            kind: 'issue_opened',
-            ignored: 'no issueTrigger configured',
-          });
-          return;
-        }
-        const r = await opts.issueTrigger(event);
+// ─── 三 provider 共享 dispatcher ───────────────────────────────────
+
+async function dispatchEvent(
+  res: Response,
+  opts: WebhookMountOptions,
+  event: ParsedWebhookEvent,
+): Promise<void> {
+  try {
+    if (event.kind === 'issue_opened') {
+      if (!opts.issueTrigger) {
         res.status(202).json({
-          ok: r.ok,
+          ok: true,
           kind: 'issue_opened',
-          repo: event.fullName,
-          issueNumber: event.issueNumber,
-          pipelineStarted: r.pipelineStarted,
-          reason: r.reason,
-          commentUrl: r.commentUrl,
+          ignored: 'no issueTrigger configured',
         });
         return;
       }
-
-      const result = await opts.trigger(event);
+      const r = await opts.issueTrigger(event);
       res.status(202).json({
-        ok: true,
-        kind: event.kind,
+        ok: r.ok,
+        kind: 'issue_opened',
         repo: event.fullName,
-        sha: event.headSha,
-        jobId: result.jobId,
-        status: result.status,
-        reason: result.reason,
+        issueNumber: event.issueNumber,
+        pipelineStarted: r.pipelineStarted,
+        reason: r.reason,
+        commentUrl: r.commentUrl,
       });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'trigger failed';
-      const status = message.includes('already in progress') ? 409 : 500;
-      res.status(status).json({ ok: false, error: message });
+      return;
     }
-  });
+
+    const result = await opts.trigger(event);
+    res.status(202).json({
+      ok: true,
+      kind: event.kind,
+      repo: event.fullName,
+      sha: event.headSha,
+      jobId: result.jobId,
+      status: result.status,
+      reason: result.reason,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'trigger failed';
+    const status = message.includes('already in progress') ? 409 : 500;
+    res.status(status).json({ ok: false, error: message });
+  }
 }
