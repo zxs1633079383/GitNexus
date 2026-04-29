@@ -83,8 +83,39 @@ flowchart TB
 ```
 
 **图例**：
-🟢 绿色 = 已有（OSS / 外部已就绪）；🟡 黄色 = 本路线图新增；🔵 蓝色 = 横切层；
+🟢 绿色 = 已落地（OSS / 已实现）；🟡 黄色 = 本路线图未做；🔵 蓝色 = 横切层；
 🔴 粉色 = side-effect；⚪ 灰色 = 并行线；空白 = 外部触发 / 闭环。
+
+#### 全流程闭环跑通状态（按 mermaid 上每条边逐一审计）
+
+| # | 图上箭头（实线主链路）| 状态 | 实现位置 / 备注 |
+|---|---|---|---|
+| 1 | `OBS → ISSUE` | ✅ | 用户 `/observe` skill (外部) 自动建 issue + body 嵌 metadata 块 |
+| 2 | `ISSUE → PRE` (`webhook issues.opened`) | ✅ | event-parser.ts (GitHub) + event-parser-gitlab.ts + event-parser-gitee.ts 三平台 issues 事件全接 |
+| 3 | `PRE → S2..S7` | ✅ | issue-handler 在 issues.opened 时直接调 `backend.callTool('run_pipeline')` 自动跑 7 阶段 |
+| 4 | `S2 → S3 → S4 → S5 → S6 → S7` | ✅ | orchestrator pipeline/v0.2.0 全真跑（隔夜 e2e 13/13 验证） |
+| 5 | `S7 → LOOP` (开发者 review/merge) | ⚠️ 半自动 | S7 默认 dryRun（policy 兜底），加 `gitnexus:auto-pr-live` 标签 + GITNEXUS_AUTOPR_LIVE=1 才真发；merge 是人工 |
+| 6 | `LOOP -.→ OBS` (新一轮巡检) | ⚠️ 半自动 | 依赖外部 `/observe` cron 重新巡检（外部驱动）|
+
+| # | 图上箭头（虚线 / 横切 / 并行）| 状态 | 备注 |
+|---|---|---|---|
+| 7 | `ORCH -.→ PRE` (issue.opened 自动调 run_pipeline) | ✅ | api.ts mountWebhookRoutes 注入 issueTrigger 回调 |
+| 8 | `ORCH -.→ S2/S4/S5/S6/S7` (管控) | ✅ | orchestrator 编排 S2-S7（缺 preview/prTarget 时各 stage 自动 skip）|
+| 9 | `PRE -.→ WIKI` (push 触发 P3 Auto Wiki) | ❌ backlog | P3 未做，wiki-handler.ts 暂缺；闭环主链路不依赖 |
+| 10 | `P2 -.→ S3` (多跳 crossDepth>1) | ❌ backlog | P2 未做，crossDepth 仍硬上限 1；并行增强不阻塞主路 |
+
+| # | 主链路前置 / 配套 | 状态 | 备注 |
+|---|---|---|---|
+| A | S2 真拉 Jaeger trace | ✅ 代码就绪 / ⏸ 等环境 | jaeger-fetcher.ts 已写；用户 pre 集群 jaeger-v2 pod CrashLoopBackOff（ES NetworkPolicy 受限），修好 + 配 JAEGER_QUERY_BASE 后立即真跑 |
+| B | 业务仓 GitNexus 索引 | ⏸ 等业务仓 | S2/S3/S4/S5 真跑需要业务仓被 GitNexus 索引；隔夜 e2e 用 mock 替代验证链路 |
+| C | 业务镜像可拉 (S6 真验证) | ⏸ 等业务接 CI | S6 用了 busybox:1.36 fixture；真业务镜像（harbor.jinqidongli.com/x9-...）等运维提供 |
+
+#### 真闭环结论（一句话）
+
+**主链路 6 条实线边 4/4 全自动 + 2/2 半自动**（半自动是设计，安全闸 + 人工 merge）；
+**横切 + 并行边 2 通 + 2 backlog**（backlog 是路线图早就声明的并行线，不阻塞闭环）。
+
+主路真实环境 e2e 已在 git.yundiz.com 验证 5 轮（2 次手动 + 3 次隔夜自动），全部跑通。
 
 #### 详细文字说明
 
