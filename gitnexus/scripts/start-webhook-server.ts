@@ -130,6 +130,113 @@ function pickPartners(bridgeRepo: string): string[] {
   return CROSS_REPO_PARTNERS[bridgeRepo] ?? [];
 }
 
+// ─── D-7: Group-level reindex helpers ────────────────────────────────────────
+/**
+ * 从 CROSS_REPO_PARTNERS 反查"哪些 group 包含给定 bridge alias"。
+ * CROSS_REPO_PARTNERS 格式: { "<primary>": ["<partner-1>", ...] }
+ * primary 自身也算 group 成员，所以 alias == primary 或 alias in partners 都命中。
+ * 返回所有命中的 primary key 列表（即 group 标识）。
+ */
+function findGroupsContaining(bridgeAlias: string): string[] {
+  const groups: string[] = [];
+  for (const [primary, partners] of Object.entries(CROSS_REPO_PARTNERS)) {
+    if (primary === bridgeAlias || partners.includes(bridgeAlias)) {
+      groups.push(primary);
+    }
+  }
+  return groups;
+}
+
+/**
+ * 给定 group key 列表，收集这些 group 的所有成员 alias（含 primary + partners）。
+ * 排除触发仓自身（由调用方过滤，这里全部返回让调用方决定）。
+ */
+function expandGroupMembers(groups: string[]): Set<string> {
+  const members = new Set<string>();
+  for (const primary of groups) {
+    members.add(primary);
+    const partners = CROSS_REPO_PARTNERS[primary] ?? [];
+    for (const p of partners) members.add(p);
+  }
+  return members;
+}
+
+// D-7 Cooldown: 同一 group 60s 内只触发 1 次 group rebuild，防 N 仓互推循环风暴。
+// Map key = primary group alias；不需持久化，重启 cooldown 重置可接受。
+const GROUP_REBUILD_COOLDOWN_MS = 60_000;
+const groupRebuildLastTs = new Map<string, number>();
+
+/**
+ * D-7: 对触发仓的所有 group partner 异步 spawn `gitnexus analyze`。
+ * 由 p1Reindex child.on('close') 回调在主仓 reindex 完成后调用。
+ * @param triggerAlias 刚完成 reindex 的仓 bridge alias（不重复 reindex 自身）
+ */
+function triggerGroupRebuild(triggerAlias: string): void {
+  const groups = findGroupsContaining(triggerAlias);
+  if (groups.length === 0) return;
+
+  const now = Date.now();
+  for (const groupKey of groups) {
+    const lastTs = groupRebuildLastTs.get(groupKey) ?? 0;
+    const secsLeft = Math.ceil((GROUP_REBUILD_COOLDOWN_MS - (now - lastTs)) / 1000);
+    if (now - lastTs < GROUP_REBUILD_COOLDOWN_MS) {
+      console.log(
+        `[push] group rebuild for [${groupKey}]: cooldown skip ${secsLeft}s left (trigger=${triggerAlias})`,
+      );
+      continue;
+    }
+    groupRebuildLastTs.set(groupKey, now);
+
+    // 收集该 group 所有 partner alias，排除触发仓自身
+    const allMembers = expandGroupMembers([groupKey]);
+    allMembers.delete(triggerAlias);
+
+    let spawnCount = 0;
+    for (const partnerAlias of allMembers) {
+      const partnerPath = CROSS_REPO_LOCAL_PATHS[partnerAlias];
+      if (!partnerPath || !existsSync(partnerPath)) {
+        console.log(
+          `[push] group rebuild for [${groupKey}]: skip ${partnerAlias} (no local path configured)`,
+        );
+        continue;
+      }
+      console.log(
+        `[push] group rebuild for [${groupKey}]: spawn gitnexus analyze path=${partnerPath} (partner=${partnerAlias})`,
+      );
+      const child = spawn('gitnexus', ['analyze', '--path', partnerPath], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let tail = '';
+      child.stdout?.on('data', () => { /* drain */ });
+      child.stderr?.on('data', (b: Buffer) => {
+        tail = (tail + b.toString('utf-8')).slice(-2000);
+      });
+      const t0 = Date.now();
+      child.on('close', (code) => {
+        const dur = Date.now() - t0;
+        if (code === 0) {
+          console.log(
+            `  ← group rebuild done: group=${groupKey} partner=${partnerAlias} dur=${dur}ms`,
+          );
+        } else {
+          console.error(
+            `  ✗ group rebuild failed: group=${groupKey} partner=${partnerAlias} exit=${code} stderr=${tail.slice(-300)}`,
+          );
+        }
+      });
+      child.on('error', (e) => {
+        console.error(
+          `  ✗ group rebuild spawn error: group=${groupKey} partner=${partnerAlias} err=${e.message}`,
+        );
+      });
+      spawnCount++;
+    }
+    console.log(
+      `[push] group rebuild for [${groupKey}]: triggered ${spawnCount} partner reindex (trigger=${triggerAlias})`,
+    );
+  }
+}
+
 if (!SECRET) {
   console.error('FATAL: GITNEXUS_GITLAB_SECRET env required');
   process.exit(1);
@@ -254,6 +361,9 @@ async function p1Reindex(opts: {
     if (code === 0) {
       reindexJobs.set(fullName, { jobId, startedAt, status: 'done', commitsBehind: stale.commitsBehind });
       console.log(`  ← P1 reindex done: ${fullName} ${stale.commitsBehind} commits, dur=${dur}ms`);
+      // D-7: 主仓 reindex 成功后，自动触发同 group partner 仓 reindex
+      const triggerAlias = pickBridgeRepo(fullName);
+      triggerGroupRebuild(triggerAlias);
     } else {
       reindexJobs.set(fullName, {
         jobId,
