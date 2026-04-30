@@ -180,27 +180,45 @@ export async function resolveHandler(
       by: 'name+class',
     });
   }
+  // P1-B (2026-04-30): name-only tier 拉 LIMIT 10 + 业务路径加权评分挑最佳,
+  // 不再 LIMIT 1 first-hit (issue#48/#49 evidence: name="load" 时 first-hit
+  // 撞 LOG.java:load 日志库, 真业务 *Controller.java:load 全没机会).
   tries.push({
-    q: `MATCH (m:Method) WHERE m.name = "${name}" RETURN m.id AS id, m.filePath AS file, m.startLine AS line LIMIT 1`,
+    q: `MATCH (m:Method) WHERE m.name = "${name}" RETURN m.id AS id, m.filePath AS file, m.startLine AS line LIMIT 10`,
     by: 'name-only',
   });
   tries.push({
-    q: `MATCH (m:Function) WHERE m.name = "${name}" RETURN m.id AS id, m.filePath AS file, m.startLine AS line LIMIT 1`,
+    q: `MATCH (m:Function) WHERE m.name = "${name}" RETURN m.id AS id, m.filePath AS file, m.startLine AS line LIMIT 10`,
     by: 'name-only',
   });
+  // P1-B: 业务路径加权评分 — 跟 resolveHandlerByContract / crossBlastRadius 同款公式.
+  const scoreRow = (file: string): number => {
+    const fileLower = (file ?? '').toLowerCase();
+    let s = 0;
+    if (!HANDLER_NOISE_DIR_KW.some((kw) => fileLower.includes(kw))) s += 100;
+    if (HANDLER_BIZ_PATH_KW.some((kw) => fileLower.includes(kw))) s += 50;
+    if (HANDLER_NON_BIZ_KW.some((kw) => fileLower.includes(kw))) s -= 80;
+    s -= (file ?? '').length * 0.3;
+    return s;
+  };
   for (const { q, by } of tries) {
     const r = await callCypher(q, opts.repo, fetchImpl);
-    if (r.rows.length > 0) {
-      const row = r.rows[0];
-      const ln = Number(row.line);
-      return {
-        uid: row.id,
-        filePath: row.file,
-        name: opts.name,
-        startLine: Number.isFinite(ln) ? ln : undefined,
-        resolvedBy: by,
-      };
-    }
+    if (r.rows.length === 0) continue;
+    // tier 1 + tier 2 (name+file / name+class) 仍 LIMIT 1 first-hit, 评分 noop;
+    // tier 3 (name-only) 多行返回时按 P1-B 评分挑最佳, 业务路径胜出.
+    const sorted =
+      by === 'name-only' && r.rows.length > 1
+        ? [...r.rows].sort((a, b) => scoreRow(b.file) - scoreRow(a.file))
+        : r.rows;
+    const row = sorted[0];
+    const ln = Number(row.line);
+    return {
+      uid: row.id,
+      filePath: row.file,
+      name: opts.name,
+      startLine: Number.isFinite(ln) ? ln : undefined,
+      resolvedBy: by,
+    };
   }
   return null;
 }
@@ -564,6 +582,33 @@ const HANDLER_NOISE_DIR_KW = [
   'example',
 ];
 
+// P1-B (2026-04-30): 业务真 handler 路径加权 — 业务真客户端 / 控制器 / API
+// 路径选优先, 避免 path 末段撞名字时选到工具类 (例: /api/cses/post/bookmark/load
+// 末段 "load" 撞上 LOG.load 日志库 — issue#48 evidence). 命中加 +50.
+const HANDLER_BIZ_PATH_KW = [
+  'controller', // Java Spring Controller
+  'csesapi/', // mattermost 跨仓 API
+  '/client/', // cses-java MattermostClient.java 等
+  'mattermostclient',
+  'service/impl', // service 实现
+  'handler/', // event/cmd handler
+  'webhook/',
+];
+
+// P1-B (2026-04-30): 工具类 / 日志库 / 通用 helper 降权 — 日常碰到 path 末段
+// "load"/"get"/"set" 等通用动词时, 这些目录下同名方法会成为最常见的假阳性源.
+// 命中减 -80 (比 noisy 还重, 确保业务路径胜出).
+const HANDLER_NON_BIZ_KW = [
+  'logger', // org/cses/logger/LOG.java
+  '/util/',
+  '/utils/',
+  'common/log',
+  '/helper/',
+  '/helpers/',
+  '/internal/log',
+  'agent-harness', // python 脚手架, 不是业务
+];
+
 export interface ContractResolvedHandler {
   uid: string;
   filePath: string;
@@ -697,12 +742,17 @@ export async function resolveHandlerByContract(
     matchType === 'cypher-name-only' &&
     !merged.some((r) => candidates.includes(r.name));
 
-  // ③ 评分挑最佳 (与 crossBlastRadius 一致)
+  // ③ 评分挑最佳 (与 crossBlastRadius 一致 + P1-B 业务路径加权)
   const score = (r: Row): number => {
     let s = 0;
     const file = r.file ?? '';
-    const noisy = HANDLER_NOISE_DIR_KW.some((kw) => file.toLowerCase().includes(kw));
+    const fileLower = file.toLowerCase();
+    const noisy = HANDLER_NOISE_DIR_KW.some((kw) => fileLower.includes(kw));
     if (!noisy) s += 100;
+    // P1-B: 业务真 handler 路径加权 (Controller / csesapi / client / service)
+    if (HANDLER_BIZ_PATH_KW.some((kw) => fileLower.includes(kw))) s += 50;
+    // P1-B: 工具类 / 日志库降权 (LOG.java / util / helper, 避免 issue#48 假阳性)
+    if (HANDLER_NON_BIZ_KW.some((kw) => fileLower.includes(kw))) s -= 80;
     if (r.label === 'Function') s += 30;
     const idx = candidates.findIndex((c) => c === r.name);
     if (idx >= 0) s += (candidates.length - idx) * 10;
@@ -795,11 +845,17 @@ export async function crossBlastRadius(
 
     // ② 排序: (a) 不含噪音目录优先 (b) Function 优先 over Method (c) candidate 优先级 (low index = canonical)
     //         (d) filePath 短的优先 — 越靠近顶层目录越可能是 handler
+    //         P1-B (2026-04-30): 加业务路径加权 + 工具类降权 (跟 resolveHandlerByContract 一致)
     const score = (r: Row): number => {
       let s = 0;
       const file = r.file ?? '';
-      const noisy = NOISE_DIR_KW.some((kw) => file.toLowerCase().includes(kw));
+      const fileLower = file.toLowerCase();
+      const noisy = NOISE_DIR_KW.some((kw) => fileLower.includes(kw));
       if (!noisy) s += 100; // 不含噪音 = +100
+      // P1-B: 业务真 handler 路径加权
+      if (HANDLER_BIZ_PATH_KW.some((kw) => fileLower.includes(kw))) s += 50;
+      // P1-B: 工具类 / 日志库降权
+      if (HANDLER_NON_BIZ_KW.some((kw) => fileLower.includes(kw))) s -= 80;
       if (r.label === 'Function') s += 30; // Go 顶层 func 是 Function
       // name match candidate 索引: 0 = canonical (createPost), 越靠后越通用易假阳性
       const idx = candidates.findIndex((c) => c === r.name);

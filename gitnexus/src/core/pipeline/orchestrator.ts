@@ -529,9 +529,16 @@ export async function runPipeline(
         },
       ];
 
-      // 优先用 LLM 真补丁 + 真断言测试 (R-14); 没有就走 S5 scaffold (R-1)
+      // 只用 LLM 真补丁 + 真断言测试 (R-14): patch-runner R-14.6 强制
+      // testFiles 含真断言, 复现 trace 报错的场景, 禁止 fail("TODO") / @Disabled.
       // fixFiles 是改既有文件 → op=update; testFiles 一般是新建 → op=create
       // cross-repo/v1.0.0: fixFiles[i].repo 决定走主仓还是 partner. 这里只放主仓 (repo == undefined).
+      //
+      // P1-A (2026-04-30): LLM abort / 不跑时**不再** push S5 R-1 scaffold (TODO 模板).
+      // 旧行为: 把 buildTestScaffoldStub 输出 (fail("TODO: implement test by developer"))
+      //         推到 MR, 让 reviewer 误以为有断言, 实际是空壳. 还污染编译.
+      // 新行为: 只推 7 阶段诊断报告 (advisory), 不推任何源码文件. S5 scaffold 路径
+      //         仍在评论里列出, 提示开发者 "本应该写 N 条测试", 但不强塞 TODO 占位.
       const partnerFixGroups = new Map<string, Array<{ path: string; content: string; op: 'create' | 'update' }>>();
       if (genFixResult) {
         for (const f of genFixResult.fixFiles) {
@@ -552,15 +559,8 @@ export async function runPipeline(
             candidateFiles.push(entry);
           }
         }
-      } else {
-        for (const path of s5Files.slice(0, 5)) {
-          candidateFiles.push({
-            path,
-            content: buildTestScaffoldStub(path, issueRef, input.prTarget!.bodyHeader ?? ''),
-            op: 'create',
-          });
-        }
       }
+      // else: 只推报告, 不推 TODO scaffold
 
       const candidate: PRCandidate = {
         owner: input.prTarget!.owner,
