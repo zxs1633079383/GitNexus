@@ -425,7 +425,8 @@ Agentic-Devops 仓 (镜像, 非 git): /Users/mac28/workspace/ai-workspace/Agenti
 ✅ single-repo/v1.0.3  issue 评论 S4 表格渲染对齐 (两套 renderer 都修)
 ─────────────────────────────────────────
 ✅ cross-repo/v1.0.0   跨仓 ContractLink + 多仓 LLM context + S7 多 PR (D-1~D-6 + D-9 落地)
-✅ D-7 P1 group reindex 自动化 (commit 2b7ffff7 + eeead2c8 fix)
+✅ cross-repo/v1.0.0 二次验证 (2026-04-30, issue#31 → MR!35, P2.3 partner suspects 真显示首发)
+✅ D-7 P1 group reindex 自动化 (commit 2b7ffff7 + eeead2c8 fix, e2e 实测 push 触发 18.9s + 715ms)
 🟡 D-4/D-8 多 service preview + LIVE 闸严格化 → docs/backlog/cross-repo-v1.1-multi-service-preview.md
 ─────────────────────────────────────────
 真实 e2e 验证 (3 次 tag):
@@ -490,15 +491,17 @@ cross-repo/v1.0.0       ⭐⭐ 跨仓 ContractLink + 多仓 LLM context + S7 多
                          · D-5 S7 多 PR 联动 ✓
                          · D-6 LLM 多仓 context (--add-dir + R-14.7) ✓
                          · D-9 多仓 token / clone 配置 ✓
-                         5 次 e2e: issue#26-30, MR!31-34
+                         6 次 e2e: issue#26-31, MR!31-35 (#28 无 MR, R-12 638>500 拒)
                          · #29 → !33  ⭐ MVP — LLM 真改 createPosts 返 void 对齐 mattermost
                          · #30 → !34  ⭐ 单仓回归 PASS, 0 cross-link 干净退化
+                         · #31 → !35  ⭐ 二次跨仓验证 (2026-04-30) — P2.3 partner suspects 真显示首发, $1.71 / 9 min
                          (commit ac9b771f)
 
 post-v1.0.0:
   · D-7 P1 group reindex 自动化 (commit 2b7ffff7 + fix eeead2c8)
-                         e2e 验证: cses-java push → P1 reindex 19s →
+                         e2e 验证: cses-java push 7718 commits → P1 reindex 18.9s →
                          group rebuild spawn mattermost reindex 715ms ✓
+                         修了 2 bug: spawn args (--path → positional) + 对称 partners 重复 spawn 去重
   · D-8 backlog: docs/backlog/cross-repo-v1.1-multi-service-preview.md (commit 98b6eaf7)
 
 🟡 task #14 future: lbug 新版 (darwin-x64 prebuilt) 发布后切回原生 group sync
@@ -708,14 +711,19 @@ npx tsx scripts/start-webhook-server.ts
 
 > 我接力上一个会话，做**跨仓 Agentic DevOps v1.1**（cross-repo/v1.1.x，多 service preview + 严格 LIVE 闸）。
 >
-> **cross-repo/v1.0.0 已稳**：tag 落地，5 次真跑（issue#26~#30 → MR!31~!34），D-1~D-6+D-9 全实现，D-7 P1 group reindex 已 e2e 验证（cses-java push → mattermost 自动 reindex 715ms）。
+> **cross-repo/v1.0.0 已稳**：tag 落地，6 次真跑（issue#26~#31 → MR!31~!35，含 #29 #30 #31 三次 ⭐），D-1~D-6+D-9 全实现，D-7 P1 group reindex 已 e2e 验证（cses-java push → mattermost 自动 reindex 715ms）。二次跨仓 (#31→!35, 2026-04-30) **P2.3 partner suspects 真显示首发**。
 >
 > **必读**:
 > 1. [`/CLAUDE.md`](CLAUDE.md) §⚓ 主航道 — 守轨规则
 > 2. [`docs/learn/跨仓-Agentic-DevOps-闭环-真跑通-SOP.md`](docs/learn/跨仓-Agentic-DevOps-闭环-真跑通-SOP.md) — 跨仓 v1.0.0 SOP 9 节
 > 3. [`docs/backlog/cross-repo-v1.1-multi-service-preview.md`](docs/backlog/cross-repo-v1.1-multi-service-preview.md) — v1.1 计划
 >
-> **下一步候选**：D-4/D-8（K8s 多 service preview + 严格 LIVE 闸）/ lbug 切原生（task #14）/ GitHub 平台跨仓回归 / 真发场景找一个跨仓 partner MR 触发的 trace.
+> **下一步候选**：
+> - 用 rotate 后的 token 重启 webhook server (PID `cat /tmp/gnx-server.pid` = 29786, 旧 token 已被 GitHub Secret Push Protection 暴露)
+> - 找一个真触发 partner MR 的 trace (S3 跨仓 contract diff > 0) 测真双 MR 同时落地
+> - 进 v1.1: D-4 多 service K8s preview + D-8 严格 LIVE 闸
+> - 接 GitHub 平台 (clawlive↔clawlive-api) 跨仓回归 (需 GitHub PAT + ngrok 公网中转)
+> - lbug 切原生（task #14, 等 darwin-x64 prebuilt 发布）
 
 — 老接力清单（cross-repo/v1.0.0 之前）保留如下供历史参考：
 
@@ -935,3 +943,88 @@ gitnexus analyze --url <业务仓>     # 让 GitNexus 索引业务仓代码
 `regression_forensics` 才能从真实 git log 找嫌疑 commit。
 
 业务仓索引一次后，整条链路 100% 真跑。
+
+---
+
+## 19.5 二次跨仓全流程真跑 (cross-repo 二次验证, 2026-04-30 落地)
+
+| 项 | 值 |
+|---|---|
+| issue | http://git.yundiz.com/cses/java/cses/cses/-/issues/31 |
+| MR | http://git.yundiz.com/cses/java/cses/cses/-/merge_requests/35 |
+| LLM cost | $1.71 / 9 min |
+| LLM 产出 | fix=1 + tests=1 (单仓修复 createPosts JsonObject→void, 同 #29→!33 模式) |
+| 关键增量 | **P2.3 跨仓 partner suspects 第一次真显示** — issue 评论里有 `🌐 partner mattermost 嫌疑 commit` 表，列了 3 条 partner suspect commits |
+
+**为什么 #29/#30 没出 partner suspects 而 #31 出了**：partner 仓 git log 时机/路径问题在 #31 跑时具备了真实 partner commits 命中条件 (mattermost 仓有跨 group 触发 reindex 后的最新 commits 落入 blast radius 的 file pattern)。
+
+### 6 次跨仓 demo 完整 issue/MR 地址表
+
+| iid | issue | MR | 验证点 |
+|---|---|---|---|
+| #26 | http://git.yundiz.com/cses/java/cses/cses/-/issues/26 | http://git.yundiz.com/cses/java/cses/cses/-/merge_requests/31 | 跨仓 ContractLink 首次显示, LLM abort (budget) |
+| #27 | http://git.yundiz.com/cses/java/cses/cses/-/issues/27 | http://git.yundiz.com/cses/java/cses/cses/-/merge_requests/32 | LLM 正确 abort 防硬塞 |
+| #28 | http://git.yundiz.com/cses/java/cses/cses/-/issues/28 | (无 MR — R-12 拒 638>500) | policy 闸 |
+| #29 ⭐ | http://git.yundiz.com/cses/java/cses/cses/-/issues/29 | http://git.yundiz.com/cses/java/cses/cses/-/merge_requests/33 | 跨仓 MVP 首次达成 |
+| #30 ⭐ | http://git.yundiz.com/cses/java/cses/cses/-/issues/30 | http://git.yundiz.com/cses/java/cses/cses/-/merge_requests/34 | 单仓回归 PASS |
+| #31 ⭐ | http://git.yundiz.com/cses/java/cses/cses/-/issues/31 | http://git.yundiz.com/cses/java/cses/cses/-/merge_requests/35 | 二次跨仓 + **P2.3 partner suspects 真显示** |
+
+---
+
+## 20. GitHub 远端落地 (zxs1633079383/GitNexus fork)
+
+跨仓 v1.0.0 全工作链已推到 GitHub fork，方便接力 / 公开归档。
+
+| 项 | URL |
+|---|---|
+| Fork 仓 | https://github.com/zxs1633079383/GitNexus |
+| 工作分支 | https://github.com/zxs1633079383/GitNexus/tree/feat/agentic-devops-cross-repo |
+| Tag (cross-repo/v1.0.0) | https://github.com/zxs1633079383/GitNexus/releases/tag/cross-repo%2Fv1.0.0 |
+
+**分支改名**: 老分支名 `feat/jaeger-span-normalizer` → `feat/agentic-devops-cross-repo`（一个分支覆盖 phase 0 + 单仓 + 跨仓 + D-7 全域，名字不再误导）。
+
+**Secret Push Protection 处理**:
+- GitHub 在 push 时检测到 4 个旧 commit 含 GitLab token (历史的 `glpat-*` 真值)
+- 用户 rotate token 后通过 GitHub 提供的 unblock URL 放行 push
+- **务必**：重启 webhook server 时用新的 rotate 后 token 替换 `GITNEXUS_AUTOPR_TOKEN_MAP` 中的旧值（旧 token 已对外暴露 → 已轮换失效）
+
+---
+
+## 21. D-7 P1 group reindex 自动化 e2e 实测
+
+`commit 2b7ffff7` (实现) + `commit eeead2c8` (修 2 bug)，e2e 在 cses-java↔mattermost 真双仓上跑通。
+
+### 修的 2 个 bug
+
+1. **spawn args 错**: 原代码 `gitnexus analyze --path /xxx`；真 CLI 签名是 positional `gitnexus analyze /xxx`（之前 p1Reindex 也错过同款）→ fix 后 spawn 真起得来
+2. **跨 group dedup 缺**: 对称 partners 配置 `{"cses-java":["mattermost"],"mattermost":["cses-java"]}` 时，cses-java push 触发 mattermost reindex，反向监听又触发 cses-java reindex 死循环 → 加去重表，同 head sha 内只 spawn 一次
+
+### 实测 log (cses-java head=`96873122ccd1`)
+
+```
+[push] cses/java/cses/cses headSha=96873122ccd1
+  → P1 reindex start: 7718 commits behind
+  ← P1 reindex done: cses/java/cses/cses 7718 commits, dur=18928ms
+[push] group rebuild for [cses-java]: spawn gitnexus analyze partner=mattermost
+  ← group rebuild done: group=cses-java partner=mattermost dur=715ms
+```
+
+P1 reindex 18.9s 处理 7718 commits（大头），group rebuild spawn mattermost reindex 仅 715ms（增量）。
+
+### 当前 server 状态
+
+- PID: `cat /tmp/gnx-server.pid` → `29786`
+- 配对称 partners: `{"cses-java":["mattermost"],"mattermost":["cses-java"]}`
+- LLM budget $5, max-concurrent=2, max_patch_lines=2000
+- LIVE 真发 mode（双因子开关已开）
+
+### 当前 commit history (远端齐了)
+
+```
+9f42956e  docs(session): 归档 cross-repo/v1.0.0 + D-7 e2e 跑通 + D-8 backlog
+eeead2c8  fix(cross-repo): D-7 修 spawn analyze CLI 真签名 + 对称 partners 重复 spawn 去重
+98b6eaf7  docs(backlog): D-4/D-8 多仓 K8s preview + LIVE 闸严格化未来计划
+2b7ffff7  feat(cross-repo): D-7 P1 group-level reindex 自动化
+ac9b771f  feat(cross-repo): cross-repo/v1.0.0 跨仓 ContractLink + 多仓 LLM context + S7 多 PR  ← tag
+ae5838e0  docs(session): 同步新分支名 (历史 feat/jaeger-span-normalizer)
+```
