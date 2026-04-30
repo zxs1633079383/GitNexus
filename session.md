@@ -1028,3 +1028,84 @@ eeead2c8  fix(cross-repo): D-7 修 spawn analyze CLI 真签名 + 对称 partners
 ac9b771f  feat(cross-repo): cross-repo/v1.0.0 跨仓 ContractLink + 多仓 LLM context + S7 多 PR  ← tag
 ae5838e0  docs(session): 同步新分支名 (历史 feat/jaeger-span-normalizer)
 ```
+
+---
+
+## 22. /Observe → Pipeline 无缝集成 (2026-04-30)
+
+> 4 commit 修 4 个错位输出 + 加 contract-strong 反查 + S2 报告渲染。
+> 不打 tag (改动小且评估期), 下次稳定后建议 `observe-pipeline/v1.0.0`.
+
+### 22.1 4 commit 索引
+
+| commit | 内容 | 行数 |
+|---|---|---|
+| `9905147b` | D + E + E-deep — Function layer + Unknown 错位消除 | +46 −13 |
+| `589ef237` | B-strong + tier-3 fuzzy + parseMethodId 扩展 | +208 −2 |
+| `da530cfd` | S5 lang-aware skip — 非 Java 仓不产 scaffold | +20 −4 |
+| `5ef03b8b` | S2 报告只显示真 handler — 子 span 统计行透明 | +24 −8 |
+
+详细文档: `docs/learn/tags/observe-pipeline-integration.md`
+
+### 22.2 issue / MR 累计
+
+cses-java:
+- 新增 issue: #32 ~ #45 (14 条)
+- 新增 MR: !36 / !37 / !38
+
+mattermost:
+- 新增 issue: #5 ~ #21 (17 条)
+- 新增 MR: !6 / !7 / !8 (**mattermost 仓首次真发 MR**)
+
+### 22.3 真双向跨仓验证 (createPost trace `0b63c667ba207792`)
+
+| 方向 | issue | S2 真接 | crossLinks | MR |
+|---|---|---|---|---|
+| cses-java consumer | #35 | `Method:IMService.java:createPost:32` | `mattermost → posts.go:393 createPost conf=0.70` | !37 |
+| mattermost provider | #12 | `Function:posts.go:createPost:393` | `cses-java → orient.py conf=0.40` (假阳性, 已知) | !8 |
+
+### 22.4 batch 8 issue 跑通验证 /Observe → pipeline 无缝衔接
+
+4 真跨仓 trace × 双向 = 8 issue, 全部触发 pipeline, 0 漏掉。
+但 batch 中途暴露 **P0**: eval-server 进程不稳定, 死后 cypher 反查全空 → 重启后立即恢复。
+
+### 22.5 当前 server 状态
+
+- webhook server PID: `cat /tmp/gnx-server.pid`
+- eval-server: `gitnexus eval-server --port 4848` (前台 + disown 启动稳)
+- env 同 §14 重启命令
+- 4 commit 已 push 待落地 (`feat/agentic-devops-cross-repo` 分支)
+
+### 22.6 已知 backlog
+
+| 等级 | 问题 |
+|---|---|
+| **P0** | eval-server 不稳定 (gitnexus-dev agent 分析中, 详见 docs/learn/tags/eval-server-stability-analysis.md) |
+| **P1** | bridge 选 handler 优先级不对 (IMService.createChannel vs MattermostClient.createChannel 选错) |
+| **P2** | 命名差异 candidates 命中不到 (`getXxx` vs `queryXxx`; 末段 `change`/`increment` 太通用) |
+| **P3** | R-1 scaffold 仅 Java; Go/TS/Rust 仓 S5 永远 skip |
+| **P4** | normalizeConsumerPath lowercase 丢失 camelCase, tier-3 才能补 |
+
+---
+
+## 23. docs/learn/tags 沉淀
+
+每个里程碑 tag 一篇文档:
+
+```
+docs/learn/tags/
+├── README.md                             ← 时间线索引
+├── observe-pipeline-integration.md       ← 本轮 (无 tag)
+├── cross-repo-v1.0.0.md                  ← 跨仓首发
+├── single-repo-v1.0.x.md                 ← 单仓 0.0~0.4
+├── mvp-v1.0.0.md                         ← Phase 0 第一刀
+├── mvp-v1.1.0.md                         ← S5/S6/S7 实现
+├── mvp-v1.2.0-bridge.md                  ← HTTP 桥接 eval-server
+├── mvp-v1.3.0-llm-patch.md               ← LLM patch 雏形
+├── e2e-v0.2.0-overnight.md               ← 通宵 e2e 骨架
+├── e2e-v0.3.0-real-jaeger.md             ← 真 Jaeger 拉 trace
+├── e2e-v0.4.0-live-bridge.md             ← LIVE 三因子真发 MR
+└── e2e-v0.5.0-llm-patch.md               ← LLM 真改业务代码
+```
+
+每篇结构: 目标 / 改动 / 真 evidence / 已知 backlog / 下一里程碑。
