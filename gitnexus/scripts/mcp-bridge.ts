@@ -133,6 +133,12 @@ export interface ResolvedHandler {
 /**
  * 反查 handler: 优先 name + file 后缀; 退化 name + class 字串; 兜底仅 name.
  * 找不到返回 null, caller 走 contractId-based fallback.
+ *
+ * 同时查 Method (Java/etc.) 和 Function (Go/Rust/TS) 双 label —
+ * GitNexus Go ingestion 把 handler 存为 :Function 节点 (例:
+ * Function:server/channels/csesapi/posts.go:createPosts:271), 不查 Function
+ * 就会 fallback 到 src/main/java/Unknown.java 形成 Java/Go 错位.
+ * 对齐 crossBlastRadius (mcp-bridge.ts:580) 已经做对的双 label 查询.
  */
 export async function resolveHandler(
   opts: {
@@ -151,6 +157,10 @@ export async function resolveHandler(
       q: `MATCH (m:Method) WHERE m.name = "${name}" AND m.filePath ENDS WITH "${file}" RETURN m.id AS id, m.filePath AS file, m.startLine AS line LIMIT 1`,
       by: 'name+file',
     });
+    tries.push({
+      q: `MATCH (m:Function) WHERE m.name = "${name}" AND m.filePath ENDS WITH "${file}" RETURN m.id AS id, m.filePath AS file, m.startLine AS line LIMIT 1`,
+      by: 'name+file',
+    });
   }
   if (opts.classHint) {
     const cls = escLiteral(opts.classHint);
@@ -158,9 +168,17 @@ export async function resolveHandler(
       q: `MATCH (m:Method) WHERE m.name = "${name}" AND m.filePath CONTAINS "${cls}" RETURN m.id AS id, m.filePath AS file, m.startLine AS line LIMIT 1`,
       by: 'name+class',
     });
+    tries.push({
+      q: `MATCH (m:Function) WHERE m.name = "${name}" AND m.filePath CONTAINS "${cls}" RETURN m.id AS id, m.filePath AS file, m.startLine AS line LIMIT 1`,
+      by: 'name+class',
+    });
   }
   tries.push({
     q: `MATCH (m:Method) WHERE m.name = "${name}" RETURN m.id AS id, m.filePath AS file, m.startLine AS line LIMIT 1`,
+    by: 'name-only',
+  });
+  tries.push({
+    q: `MATCH (m:Function) WHERE m.name = "${name}" RETURN m.id AS id, m.filePath AS file, m.startLine AS line LIMIT 1`,
     by: 'name-only',
   });
   for (const { q, by } of tries) {

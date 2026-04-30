@@ -542,22 +542,19 @@ function buildDeps(fullName: string): OrchestratorDeps {
         } as any;
       }
 
-      const fallbackUid = norm.contractId
-        ? `Method:${norm.contractId.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 60)}`
-        : `Method:Unknown_${(span as any).spanID?.slice(0, 6) ?? 'x'}`;
+      // E-deep (2026-04-30): 不再凑假 fallbackUid 让下游误以为是 handler.
+      // 子 span (DB query / pulsar / 内部调用) 本来就不是 handler, 应该返
+      // resolved:false, 让 orchestrator 自然跳过, 避免污染 S3/S5.
+      // 旧行为: 凑出 Method:Unknown_xxx + src/main/java/Unknown.java →
+      //         S5 生成 Test_unknown.java 噪声 (Go 仓挂 Java 测试错位).
       return {
-        resolved: true,
-        handler: {
-          uid: fallbackUid,
-          filePath: top?.file ?? norm.codeFilePath ?? 'src/main/java/Unknown.java',
-          name: norm.contractId ?? candidates[0] ?? 'unknown',
-        },
-        kind: norm.kind ?? 'http',
+        resolved: false,
+        kind: norm.kind ?? 'unknown',
         contractId: norm.contractId,
         topFrame: top,
-        resolvedBy: 'fallback',
+        resolvedBy: 'none',
         bridgeNote: bridgeOk
-          ? `bridge miss for [${candidates.join(',')}] in repo=${repo}`
+          ? `bridge miss for [${candidates.join(',')}] in repo=${repo} (kind=${norm.kind ?? 'unknown'})`
           : 'bridge offline — mock fallback',
       } as any;
     },

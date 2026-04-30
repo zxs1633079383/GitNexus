@@ -60,6 +60,19 @@ function extractHandlerFile(outcome: S2Output): string | null {
   return typeof o?.handler?.filePath === 'string' ? o.handler.filePath : null;
 }
 
+/**
+ * 识别合成 fallback UID — E 护栏. resolveSpan 历史上对子 span 凑假 UID
+ * (Method:Unknown_xxx / Method:http__POST___api_xxx) 让 S3/S5 误把子 span
+ * 当 handler. E-deep 修 resolveSpan 不再凑, 这里留兜底护栏防回退.
+ */
+function isFallbackUid(uid: string, filePath: string | null): boolean {
+  if (uid.startsWith('Method:Unknown_')) return true;
+  if (filePath === 'src/main/java/Unknown.java') return true;
+  // contractId-based 假 UID: Method:http__POST___xxx (E-deep 修后不再产生, 防御)
+  if (/^Method:(http|grpc|topic)__/.test(uid)) return true;
+  return false;
+}
+
 /** 异步轮询直到 status ∈ {done, failed}，超时返回当前状态。 */
 async function pollPreviewToTerminal(
   deps: OrchestratorDeps,
@@ -223,7 +236,12 @@ export async function runPipeline(
   for (const r of s2_resolve) {
     if (r.status === 'ok' && r.output) {
       const uid = extractHandlerUid(r.output);
-      if (uid) handlerUidSet.add(uid);
+      // E (2026-04-30): 兜底过滤合成 fallback UID — 即使 resolveSpan 又凑假
+      // (Method:Unknown_* / filePath=Unknown.java), 这一层也挡住, 避免 S3/S5
+      // 拿到伪 handler 跑空污染产出. E-deep 已修 resolveSpan 不再凑, 这里留护栏.
+      if (uid && !isFallbackUid(uid, extractHandlerFile(r.output))) {
+        handlerUidSet.add(uid);
+      }
     }
   }
   const resolvedHandlerUids = [...handlerUidSet];
