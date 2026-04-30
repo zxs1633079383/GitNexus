@@ -108,11 +108,18 @@ export async function callCypher(
   }
 }
 
-/** Method id 格式: "Method:<filePath>:<name>:<startLine>". 用 greedy 抓 filePath, 末尾两段切. */
+/**
+ * Symbol id 格式: "<Label>:<filePath>:<name>:<startLine>".
+ * Label ∈ {Method (Java/etc.), Function (Go/Rust/TS)}.
+ * 用 greedy 抓 filePath, 末尾两段切.
+ *
+ * (B-strong 后扩展接受 Function — Go handler 节点 label 是 Function 不是 Method,
+ * 不接受会导致 S3/S5 在 mattermost 仓上对真 handler UID 解析失败回到 fallback.)
+ */
 export function parseMethodId(
   id: string,
 ): { filePath: string; name: string; line: number } | null {
-  const m = /^Method:(.+):([^:]+):(\d+)$/.exec(id);
+  const m = /^(?:Method|Function):(.+):([^:]+):(\d+)$/.exec(id);
   if (!m) return null;
   return { filePath: m[1], name: m[2], line: Number(m[3]) };
 }
@@ -544,6 +551,175 @@ export interface CrossLink {
   matchType: 'cypher-name+path' | 'cypher-name-only';
   /** 0-1; cypher-name+path = 0.7, cypher-name-only = 0.4 (假阳性风险) */
   confidence: number;
+}
+
+// Shared 黑名单 — handler 反查噪音目录, 排序时降权 (B-strong + crossBlastRadius 共享).
+const HANDLER_NOISE_DIR_KW = [
+  'slashcommand',
+  'internal/',
+  'mock',
+  'fixture',
+  'auto_',
+  'sample',
+  'example',
+];
+
+export interface ContractResolvedHandler {
+  uid: string;
+  filePath: string;
+  name: string;
+  startLine?: number;
+  /** 节点 label, KuzuDB 1.4.1 区分 Method (Java/etc.) / Function (Go/Rust/TS 顶层 func) */
+  label: 'Method' | 'Function';
+  /** cypher-name+path = 双过滤命中 (parent path 段); cypher-name-only = 仅 name 匹配 */
+  matchType: 'cypher-name+path' | 'cypher-name-only';
+  /** 0-1; cypher-name+path = 0.7, cypher-name-only = 0.4 (假阳性风险) */
+  confidence: number;
+}
+
+/**
+ * B-strong (2026-04-30): 给一个 contractId, 在指定 repo 里反查真 handler.
+ *
+ * 复用 crossBlastRadius 已验证的强名字候选 + 双 label + 评分算法,
+ * 让 primary 仓 resolveSpan 不再依赖 contractMethod 弱末段名 (e.g.
+ * "/api/cses/posts/getSchedule" 末段 "getSchedule" 找不到 Go handler
+ * "getScheduledPost", 但 deriveHandlerNameCandidates 会生成
+ * ['getSchedulePost','GetSchedulePost','getSchedule',...] 命中).
+ *
+ * 算法 (cypher-only, 不 grep 源码):
+ *   1. parseContractId → pathSegments
+ *   2. deriveHandlerNameCandidates → ['createPost','CreatePost',...] 多形态
+ *   3. 双 label 查询 (Method ∪ Function) + filePath CONTAINS parent 段
+ *   4. 兜底: 去掉 path 过滤仅 name 匹配 (confidence 降到 0.4)
+ *   5. 评分挑最佳 (噪音目录 / Function 优先 / candidate idx / 路径长度)
+ *
+ * 找不到返回 null, caller 自行判断是否走 resolved:false.
+ */
+export async function resolveHandlerByContract(
+  opts: { contractId: string; repo: string },
+  fetchImpl: typeof fetch = fetch,
+): Promise<ContractResolvedHandler | null> {
+  const { pathSegments } = parseContractId(opts.contractId);
+  if (pathSegments.length === 0) return null;
+  const candidates = deriveHandlerNameCandidates(pathSegments);
+  if (candidates.length === 0) return null;
+  const parentSeg =
+    pathSegments.length >= 2 ? pathSegments[pathSegments.length - 2] : pathSegments[0];
+
+  const namePred = candidates.map((c) => safeNameEqualsClause(c, 'n')).join(' OR ');
+  const fileFilter = `n.filePath CONTAINS "${escLiteral(parentSeg)}" AND NOT n.filePath CONTAINS "test"`;
+
+  type Row = {
+    id: string;
+    name: string;
+    file: string;
+    line?: string;
+    label: 'Method' | 'Function';
+  };
+
+  // ① 双 label 查询 — Method (Java/etc.) ∪ Function (Go/Rust/TS), 各取 5 行
+  const [methodR, fnR] = await Promise.all([
+    callCypher(
+      `MATCH (n:Method) WHERE (${namePred}) AND ${fileFilter} RETURN n.id AS id, n.name AS name, n.filePath AS file, n.startLine AS line LIMIT 5`,
+      opts.repo,
+      fetchImpl,
+    ),
+    callCypher(
+      `MATCH (n:Function) WHERE (${namePred}) AND ${fileFilter} RETURN n.id AS id, n.name AS name, n.filePath AS file, n.startLine AS line LIMIT 5`,
+      opts.repo,
+      fetchImpl,
+    ),
+  ]);
+
+  let merged: Row[] = [
+    ...methodR.rows.map((r) => ({ ...r, label: 'Method' as const })),
+    ...fnR.rows.map((r) => ({ ...r, label: 'Function' as const })),
+  ] as Row[];
+  let matchType: ContractResolvedHandler['matchType'] = 'cypher-name+path';
+
+  // ② 兜底: 去掉 path 过滤仅 name 匹配 (假阳性风险高 → confidence 0.4)
+  if (merged.length === 0) {
+    const [fbM, fbF] = await Promise.all([
+      callCypher(
+        `MATCH (n:Method) WHERE (${namePred}) AND NOT n.filePath CONTAINS "test" RETURN n.id AS id, n.name AS name, n.filePath AS file, n.startLine AS line LIMIT 5`,
+        opts.repo,
+        fetchImpl,
+      ),
+      callCypher(
+        `MATCH (n:Function) WHERE (${namePred}) AND NOT n.filePath CONTAINS "test" RETURN n.id AS id, n.name AS name, n.filePath AS file, n.startLine AS line LIMIT 5`,
+        opts.repo,
+        fetchImpl,
+      ),
+    ]);
+    merged = [
+      ...fbM.rows.map((r) => ({ ...r, label: 'Method' as const })),
+      ...fbF.rows.map((r) => ({ ...r, label: 'Function' as const })),
+    ] as Row[];
+    matchType = 'cypher-name-only';
+  }
+
+  // ③ 模糊兜底: lower(name) STARTS WITH lower(末段) — 解决 normalizeConsumerPath
+  //    把 path lowercase 后 candidates 丢失 camelCase 信息的问题.
+  //    例: trace 路径 /api/cses/posts/getSchedule → lower → "getschedule",
+  //    candidates 生成 ['getschedulePost',...] 都不匹配真 Go handler "getScheduledPost"
+  //    (含 "d"). 用 lower("getScheduledPost") STARTS WITH "getschedule" 直接命中.
+  //    confidence 0.25 (假阳性最高: e.g. "getScheduledPost" 也会命中 "getSchedule").
+  if (merged.length === 0) {
+    const last = pathSegments[pathSegments.length - 1].toLowerCase();
+    const lastEsc = escLiteral(last);
+    if (last.length >= 4) {
+      // 太短 (<4 char) 假阳性爆炸, 直接放弃
+      const [fzM, fzF] = await Promise.all([
+        callCypher(
+          `MATCH (n:Method) WHERE lower(n.name) STARTS WITH "${lastEsc}" AND ${fileFilter} RETURN n.id AS id, n.name AS name, n.filePath AS file, n.startLine AS line LIMIT 5`,
+          opts.repo,
+          fetchImpl,
+        ),
+        callCypher(
+          `MATCH (n:Function) WHERE lower(n.name) STARTS WITH "${lastEsc}" AND ${fileFilter} RETURN n.id AS id, n.name AS name, n.filePath AS file, n.startLine AS line LIMIT 5`,
+          opts.repo,
+          fetchImpl,
+        ),
+      ]);
+      merged = [
+        ...fzM.rows.map((r) => ({ ...r, label: 'Method' as const })),
+        ...fzF.rows.map((r) => ({ ...r, label: 'Function' as const })),
+      ] as Row[];
+      if (merged.length > 0) {
+        matchType = 'cypher-name-only'; // 用现有 enum 复用 (confidence 单独压低)
+      }
+    }
+  }
+
+  if (merged.length === 0) return null;
+  // 模糊 tier 3 命中时把 confidence 进一步压到 0.25
+  const isFuzzyTier3 =
+    matchType === 'cypher-name-only' &&
+    !merged.some((r) => candidates.includes(r.name));
+
+  // ③ 评分挑最佳 (与 crossBlastRadius 一致)
+  const score = (r: Row): number => {
+    let s = 0;
+    const file = r.file ?? '';
+    const noisy = HANDLER_NOISE_DIR_KW.some((kw) => file.toLowerCase().includes(kw));
+    if (!noisy) s += 100;
+    if (r.label === 'Function') s += 30;
+    const idx = candidates.findIndex((c) => c === r.name);
+    if (idx >= 0) s += (candidates.length - idx) * 10;
+    s -= file.length * 0.3;
+    return s;
+  };
+  const best = [...merged].sort((a, b) => score(b) - score(a))[0];
+  const ln = Number(best.line);
+  return {
+    uid: best.id ?? '',
+    filePath: best.file ?? '',
+    name: best.name ?? '',
+    startLine: Number.isFinite(ln) ? ln : undefined,
+    label: best.label,
+    matchType,
+    confidence: matchType === 'cypher-name+path' ? 0.7 : isFuzzyTier3 ? 0.25 : 0.4,
+  };
 }
 
 /**

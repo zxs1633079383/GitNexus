@@ -45,6 +45,7 @@ import { normalizeJaegerSpan } from '../src/core/observability/jaeger-span-norma
 import {
   pingEvalServer,
   resolveHandler,
+  resolveHandlerByContract,
   blastRadius,
   parseMethodId,
   crossBlastRadius,
@@ -540,6 +541,35 @@ function buildDeps(fullName: string): OrchestratorDeps {
           resolvedBy: resolved.resolvedBy,
           bridgeNote: `bridge hit via ${resolved.resolvedBy} (candidate=${usedCandidate}, repo=${repo})`,
         } as any;
+      }
+
+      // B-strong (2026-04-30): 弱 candidates miss 后, 用 contractId 走强反查.
+      // 复用 crossBlastRadius 已验证的多形态名字候选 (deriveHandlerNameCandidates)
+      // + 双 label (Method/Function) + filePath parent 段过滤 + 评分.
+      // 解决 path 末段 != handler 名字的硬伤 (例: /api/cses/posts/getSchedule
+      // 末段 "getSchedule" 但 Go handler 叫 "getScheduledPost", canonical 候选
+      // "getSchedulePost" 也得算上).
+      if (bridgeOk && norm.contractId) {
+        const byContract = await resolveHandlerByContract(
+          { contractId: norm.contractId, repo },
+          fetch,
+        );
+        if (byContract) {
+          return {
+            resolved: true,
+            handler: {
+              uid: byContract.uid,
+              filePath: byContract.filePath,
+              name: byContract.name,
+              startLine: byContract.startLine,
+            },
+            kind: norm.kind ?? 'http',
+            contractId: norm.contractId,
+            topFrame: top,
+            resolvedBy: 'contract-strong',
+            bridgeNote: `bridge hit via contract-strong (${byContract.matchType}, label=${byContract.label}, conf=${byContract.confidence}, repo=${repo})`,
+          } as any;
+        }
       }
 
       // E-deep (2026-04-30): 不再凑假 fallbackUid 让下游误以为是 handler.
