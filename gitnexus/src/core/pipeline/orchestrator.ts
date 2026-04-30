@@ -281,11 +281,13 @@ export async function runPipeline(
   ) {
     const seenContracts = new Set<string>();
     const allCrossLinks: unknown[] = [];
+    const contractsAnalyzed: string[] = [];
     for (const r of s2_resolve) {
       if (r.status !== 'ok' || !r.output) continue;
       const cid = (r.output as { contractId?: string }).contractId;
       if (!cid || seenContracts.has(cid)) continue;
       seenContracts.add(cid);
+      contractsAnalyzed.push(cid);
       try {
         const links = await deps.crossBlastRadius({ contractId: cid });
         allCrossLinks.push(...links);
@@ -293,11 +295,17 @@ export async function runPipeline(
         /* ignore */
       }
     }
-    if (allCrossLinks.length > 0) {
-      // 重建 s3_blast[0] (原 skipped) 塞进 crossLinks 让渲染层显示
+    // P3 (2026-04-30 强化): 即使 crossLinks 为 0, 也注入 attempt 标志 +
+    // 已查 contract 列表, 让 issue-handler 显式显示 "已分析跨仓 partner, N 命中"
+    // (而不是 silent skipped 让 reviewer 误以为没做分析).
+    if (contractsAnalyzed.length > 0) {
       s3_blast[0] = {
         ...s3_blast[0],
-        output: { crossLinks: allCrossLinks } as S3Output,
+        output: {
+          crossLinks: allCrossLinks,
+          crossLinksAttempted: true,
+          contractsAnalyzed,
+        } as S3Output,
       };
     }
   }
