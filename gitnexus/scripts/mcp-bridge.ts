@@ -72,6 +72,70 @@ export function parseMarkdownTable(md: string): Record<string, string>[] {
   return rows;
 }
 
+/**
+ * P2 (2026-04-30): 调 eval-server `/tool/context` 拿符号 360 度视图 (markdown).
+ * 用于 verifyHandlerIsReal 验真 — 区分真 handler / 工具类 / 孤立假阳性.
+ *
+ * eval-server context API 返 plain markdown (含 "Called/imported by (N):" + 列表
+ * + "Calls/imports (M):" + 列表), 不是 JSON. 直接返原文给 caller 解析.
+ */
+export async function callContext(
+  symbolUid: string,
+  repo: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  try {
+    const r = await fetchImpl(`${BASE}/tool/context`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: symbolUid, repo }),
+      signal: ctrl.signal,
+    });
+    if (!r.ok) return '';
+    return await r.text();
+  } catch {
+    return '';
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/**
+ * P2 (2026-04-30): 验候选 handler 真假 — 调 /tool/context 看 incoming/outgoing.
+ *
+ * 规则:
+ *   · 真 handler: incoming 或 outgoing 含**跨包**调用 (filePath != self)
+ *   · 孤立假阳性: incoming/outgoing 全 self-pointing (指向自己同文件)
+ *     → reject (例: PushController.load:51 全自引用, 跟 path bookmark/load 无关)
+ *   · 工具类 (LOG.load): incoming 多 + 跨包多, accept (业务路径加权已 -80 排除最坏情况)
+ *
+ * 返 false 时 caller 应该 reject 该候选, 走下一个 / 返 null.
+ */
+export function verifyHandlerIsReal(
+  uid: string,
+  contextMarkdown: string,
+): boolean {
+  if (!contextMarkdown) return true; // context 不可用时不阻挡 (回退到旧行为)
+  const parsed = parseMethodId(uid);
+  if (!parsed) return true;
+  const selfFile = parsed.filePath;
+  // markdown 形如:
+  //   ← [calls] undefined load → server/src/main/java/.../PushController.java
+  //   ← [calls] undefined updateView → server/src/.../ReadDocumentEventHandler.java
+  // 提取所有 "→ <filePath>" (callers 的 filePath)
+  const lineRegex = /→\s+([^\s]+\.(?:java|go|ts|tsx|js|py|rs|kt|scala))/g;
+  const allEdges: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = lineRegex.exec(contextMarkdown)) !== null) {
+    allEdges.push(m[1]);
+  }
+  // 排除 self-pointing (filePath == selfFile)
+  const crossPackageEdges = allEdges.filter((f) => f !== selfFile);
+  return crossPackageEdges.length > 0;
+}
+
 export async function callCypher(
   query: string,
   repo: string,
@@ -201,24 +265,36 @@ export async function resolveHandler(
     s -= (file ?? '').length * 0.3;
     return s;
   };
+  // P2 (2026-04-30): hard-reject 工具类路径 (LOG.java / util / helper) — 无论
+  // verify 怎样, 工具类不该当 handler. 单纯 -80 降权不够 (LOG.load 有 9 个跨包
+  // callers, 总分仍正, 会被选中). 直接过滤掉这些 filePath 的候选.
+  const hardRejectNonBiz = (file: string): boolean =>
+    HANDLER_NON_BIZ_KW.some((kw) => (file ?? '').toLowerCase().includes(kw));
+
   for (const { q, by } of tries) {
     const r = await callCypher(q, opts.repo, fetchImpl);
     if (r.rows.length === 0) continue;
-    // tier 1 + tier 2 (name+file / name+class) 仍 LIMIT 1 first-hit, 评分 noop;
-    // tier 3 (name-only) 多行返回时按 P1-B 评分挑最佳, 业务路径胜出.
+    // P2 hard-reject + score 排序
+    const filtered = r.rows.filter((row) => !hardRejectNonBiz(row.file));
+    if (filtered.length === 0) continue;
     const sorted =
-      by === 'name-only' && r.rows.length > 1
-        ? [...r.rows].sort((a, b) => scoreRow(b.file) - scoreRow(a.file))
-        : r.rows;
-    const row = sorted[0];
-    const ln = Number(row.line);
-    return {
-      uid: row.id,
-      filePath: row.file,
-      name: opts.name,
-      startLine: Number.isFinite(ln) ? ln : undefined,
-      resolvedBy: by,
-    };
+      by === 'name-only' && filtered.length > 1
+        ? [...filtered].sort((a, b) => scoreRow(b.file) - scoreRow(a.file))
+        : filtered;
+    // P2: 选 best 后调 /tool/context 验真 — 跨包 callers/callees 都空 (孤立符号)
+    // 直接 reject, 全部 reject 返 null. 让 caller 用跨仓 link 描述本仓无 handler.
+    for (const row of sorted) {
+      const ctx = await callContext(row.id, opts.repo, fetchImpl);
+      if (!verifyHandlerIsReal(row.id, ctx)) continue; // 孤立符号, 下一个
+      const ln = Number(row.line);
+      return {
+        uid: row.id,
+        filePath: row.file,
+        name: opts.name,
+        startLine: Number.isFinite(ln) ? ln : undefined,
+        resolvedBy: by,
+      };
+    }
   }
   return null;
 }
@@ -759,17 +835,29 @@ export async function resolveHandlerByContract(
     s -= file.length * 0.3;
     return s;
   };
-  const best = [...merged].sort((a, b) => score(b) - score(a))[0];
-  const ln = Number(best.line);
-  return {
-    uid: best.id ?? '',
-    filePath: best.file ?? '',
-    name: best.name ?? '',
-    startLine: Number.isFinite(ln) ? ln : undefined,
-    label: best.label,
-    matchType,
-    confidence: matchType === 'cypher-name+path' ? 0.7 : isFuzzyTier3 ? 0.25 : 0.4,
-  };
+  // P2 (2026-04-30): hard-reject 工具类路径 + score 排序 + verifyHandlerIsReal 验真.
+  // 工具类 (logger/util/helper) hard-reject; 业务路径走 score + verify 双门;
+  // 全部 reject 返 null, 让 caller 用跨仓 link 描述本仓无 handler.
+  const filtered = merged.filter(
+    (r) => !HANDLER_NON_BIZ_KW.some((kw) => (r.file ?? '').toLowerCase().includes(kw)),
+  );
+  if (filtered.length === 0) return null;
+  const sortedAll = [...filtered].sort((a, b) => score(b) - score(a));
+  for (const cand of sortedAll) {
+    const ctx = await callContext(cand.id ?? '', opts.repo, fetchImpl);
+    if (!verifyHandlerIsReal(cand.id ?? '', ctx)) continue;
+    const ln = Number(cand.line);
+    return {
+      uid: cand.id ?? '',
+      filePath: cand.file ?? '',
+      name: cand.name ?? '',
+      startLine: Number.isFinite(ln) ? ln : undefined,
+      label: cand.label,
+      matchType,
+      confidence: matchType === 'cypher-name+path' ? 0.7 : isFuzzyTier3 ? 0.25 : 0.4,
+    };
+  }
+  return null; // 所有候选都是孤立符号 / verify 失败
 }
 
 /**

@@ -269,6 +269,38 @@ export async function runPipeline(
   // 每条 ok 的 S3 取对应 S2 的 contractId, 调 deps.crossBlastRadius 找 partner 仓 handler.
   // 命中的 crossLinks 作为不变量塞进 s3 output (caller 看 'crossLinks' 字段).
   // deps.crossBlastRadius 缺省时整段 skip — 单仓退化到 cross-repo/v1.0.0 之前行为.
+  //
+  // P3 (2026-04-30): S2 resolved 全失败 (本仓无真 handler) 时, 仍调
+  // crossBlastRadius 跑 contractId 反查 — 让 reviewer 看到"本仓无影响, 但跨仓
+  // 有匹配 → contract 实现在 partner 仓". s3_blast[0] 是 skipped 占位, 把
+  // crossLinks 塞进它的 output, issue-handler 渲染时 fallthrough 显示.
+  if (
+    deps.crossBlastRadius &&
+    resolvedHandlerUids.length === 0 &&
+    s2_resolve.length > 0
+  ) {
+    const seenContracts = new Set<string>();
+    const allCrossLinks: unknown[] = [];
+    for (const r of s2_resolve) {
+      if (r.status !== 'ok' || !r.output) continue;
+      const cid = (r.output as { contractId?: string }).contractId;
+      if (!cid || seenContracts.has(cid)) continue;
+      seenContracts.add(cid);
+      try {
+        const links = await deps.crossBlastRadius({ contractId: cid });
+        allCrossLinks.push(...links);
+      } catch {
+        /* ignore */
+      }
+    }
+    if (allCrossLinks.length > 0) {
+      // 重建 s3_blast[0] (原 skipped) 塞进 crossLinks 让渲染层显示
+      s3_blast[0] = {
+        ...s3_blast[0],
+        output: { crossLinks: allCrossLinks } as S3Output,
+      };
+    }
+  }
   if (deps.crossBlastRadius && s3_blast.some((r) => r.status === 'ok')) {
     for (let i = 0; i < s3_blast.length; i++) {
       const blast = s3_blast[i];

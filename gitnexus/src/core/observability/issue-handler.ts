@@ -194,6 +194,24 @@ export function renderReportToComment(
   L.push('');
   if (report.s3_blast[0]?.status === 'skipped') {
     L.push(`_skipped: ${report.s3_blast[0].reason ?? '(no handler)'}_`);
+    // P3 (2026-04-30): S3 skipped 时, 如果 orchestrator 在 skipped output 里
+    // 注入了 crossLinks (本仓无 handler, 跨仓有匹配), 单独列出来 — 让 reviewer
+    // 看到 "本仓无影响, 但 contract 实现在 partner 仓".
+    const o = report.s3_blast[0]?.output as any;
+    const crossLinks: any[] = Array.isArray(o?.crossLinks) ? o.crossLinks : [];
+    if (crossLinks.length > 0) {
+      L.push('');
+      L.push(`> ℹ️ 本仓无 handler, 但跨仓有 ${crossLinks.length} 条匹配 — contract 实现在 partner 仓:`);
+      L.push('');
+      for (const c of crossLinks.slice(0, 5)) {
+        const ph = c.partnerHandler ?? {};
+        const conf = typeof c.confidence === 'number' ? c.confidence.toFixed(2) : '?';
+        L.push(
+          `- 🌐 \`${c.partnerRepo}\` → \`${ph.filePath ?? '?'}:${ph.startLine ?? '?'}\` (${ph.name ?? '?'}, ${c.matchType}, conf=${conf})`,
+        );
+        if (c.contractId) L.push(`    contract: \`${c.contractId}\``);
+      }
+    }
   } else {
     for (const r of report.s3_blast.slice(0, 5)) {
       if (r.status !== 'ok' || !r.output) continue;
