@@ -149,17 +149,28 @@ export function renderReportToComment(
   L.push('');
 
   // ─── S2 详情 ─────────────────────────────────────────
+  // 只展示真接到 handler 的 span. 子 span (pulsar/app.* 内部 / DB query
+  // 等) 没 handler 是预期行为 (E-deep: resolved=false), 不该污染报告.
   L.push('---');
   L.push('### 🎯 S2 · Trace2Code Resolver');
   L.push('');
-  L.push('每条 span 解析为 handler symbol UID:');
+  const resolvedRows = report.s2_resolve.filter((r) => {
+    if (r.status !== 'ok' || !r.output) return false;
+    const o = r.output as any;
+    return o.resolved === true && typeof o.handler?.uid === 'string';
+  });
+  const totalSpans = report.s2_resolve.length;
+  const skippedNonHandler = totalSpans - resolvedRows.length;
+
+  L.push(
+    `共 \`${totalSpans}\` 条 spans, 真接到 handler \`${resolvedRows.length}\` 条` +
+      (skippedNonHandler > 0
+        ? `, \`${skippedNonHandler}\` 条非 handler span (子 span / 内部操作 / 无 contractId) 省略`
+        : ''),
+  );
   L.push('');
   let s2Shown = 0;
-  for (const r of report.s2_resolve.slice(0, 10)) {
-    if (r.status !== 'ok' || !r.output) {
-      L.push(`- ❌ ${r.reason ?? r.status}`);
-      continue;
-    }
+  for (const r of resolvedRows.slice(0, 10)) {
     const o = r.output as any;
     const uid = o.handler?.uid ?? '(unknown)';
     const file = o.handler?.filePath ?? '';
@@ -167,8 +178,13 @@ export function renderReportToComment(
     L.push(`- \`${contract}\` → \`${uid}\`${file ? ` _(${file})_` : ''}`);
     s2Shown++;
   }
-  if (report.s2_resolve.length > s2Shown) {
-    L.push(`- _… 还有 ${report.s2_resolve.length - s2Shown} 条 spans 省略_`);
+  if (resolvedRows.length > s2Shown) {
+    L.push(`- _… 还有 ${resolvedRows.length - s2Shown} 条已解析 handler 省略_`);
+  }
+  if (resolvedRows.length === 0) {
+    L.push(
+      '_⚠️ 0 个 span 接到 handler — trace 可能全是子 span 或 contractId 不在已索引仓._',
+    );
   }
   L.push('');
 
