@@ -319,19 +319,35 @@ export async function runPipeline(
   );
 
   // ── S5 · gen_e2e_tests ────────────────────────────────────────────────
+  // R-1 scaffold 模板硬编码 Java 风格 (Test_xxx.java + JUnit). 对 Go (.go) /
+  // Rust (.rs) / TS (.ts) 仓 handler 跑 S5 会产语种错位垃圾, 直接 skip.
+  // 判定方式: 看 handler filePath 后缀 — 不是 .java 就 skip.
   let s5_testgen: StageResult<S5Output>[];
   if (resolvedHandlerUids.length === 0) {
     s5_testgen = [skipped<S5Output>('S5', 'no resolved handler from S2')];
   } else {
     s5_testgen = await Promise.all(
-      resolvedHandlerUids.map((uid) =>
-        runStage<S5Output>('S5', () =>
+      resolvedHandlerUids.map((uid) => {
+        const s2Match = s2_resolve.find(
+          (r) => r.status === 'ok' && extractHandlerUid(r.output) === uid,
+        );
+        const filePath = s2Match ? extractHandlerFile(s2Match.output) : null;
+        const isJava = !!filePath && filePath.endsWith('.java');
+        if (!isJava) {
+          return Promise.resolve(
+            skipped<S5Output>(
+              'S5',
+              `handler 非 Java (filePath=${filePath ?? 'null'}) — R-1 scaffold 仅支持 Java, Go/Rust/TS 仓不产测试避免语种错位`,
+            ),
+          );
+        }
+        return runStage<S5Output>('S5', () =>
           deps.genE2ETests({
             target_uid: uid,
             language: input.testLanguageHint,
           }),
-        ),
-      ),
+        );
+      }),
     );
   }
 
