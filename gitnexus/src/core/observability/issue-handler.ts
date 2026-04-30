@@ -344,7 +344,24 @@ export function renderReportToComment(
     }
     if (allFiles.length === 0) L.push('_无测试脚手架_');
     else {
-      L.push(`生成 ${allFiles.length} 个脚手架 (unit + contract + integration):`);
+      // 判断 R-1 scaffold 是否真被 push 到 MR (P1-A 之后, LLM abort 时 scaffold
+      // 不推, 只推报告). 看 S7 put-files stage 推了几个 file: 1 file = 仅报告
+      // (LLM abort, scaffold 是 advisory); >=2 = 含 LLM 真补丁/真断言或 scaffold.
+      const s7Out = report.s7_autopr?.output as any;
+      const putStage = Array.isArray(s7Out?.stages)
+        ? s7Out.stages.find((s: any) => s.name === 'put-files')
+        : null;
+      const pushedMatch = /pushed\s+(\d+)\s+file/i.exec(putStage?.reason ?? '');
+      const pushedCount = pushedMatch ? Number(pushedMatch[1]) : -1;
+      // 1 file = 仅报告 (.gitnexus/reports/auto-pr-issue-N.md), scaffold 没推
+      const scaffoldNotPushed = pushedCount === 1;
+      if (scaffoldNotPushed) {
+        L.push(
+          `生成 ${allFiles.length} 个脚手架 (advisory, **未 push 到 MR** — P1-A: LLM 主动 abort 时不推 R-1 TODO scaffold, 只推报告):`,
+        );
+      } else {
+        L.push(`生成 ${allFiles.length} 个脚手架 (unit + contract + integration):`);
+      }
       for (const f of allFiles.slice(0, 12)) L.push(`- \`${f}\``);
       if (allFiles.length > 12) L.push(`- _… ${allFiles.length - 12} more_`);
     }
