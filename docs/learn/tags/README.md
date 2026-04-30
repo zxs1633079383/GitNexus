@@ -7,6 +7,7 @@
 | Tag / 阶段 | 日期 | 核心产出 | 文档 |
 |---|---|---|---|
 | **observe-pipeline-integration** (无 tag) | 2026-04-30 | /Observe → pipeline 无缝集成；4 真跨仓 trace × 双向批量验证；4 commit 修 Function/Unknown/S5 lang/S2 渲染 | [observe-pipeline-integration.md](./observe-pipeline-integration.md) |
+| **eval-server-stability-analysis** (诊断, 非 tag) | 2026-04-30 | KuzuDB 1.4.1 N-API SIGSEGV 根因确诊 + 4 守护方案对比 + pm2 落地建议 | [eval-server-stability-analysis.md](./eval-server-stability-analysis.md) |
 | **cross-repo/v1.0.0** | 2026-04-29 | 跨仓 ContractLink 首发；6 demo (#26~#31)；P2.3 partner suspects 真显示 | [cross-repo-v1.0.0.md](./cross-repo-v1.0.0.md) |
 | **single-repo/v1.0.4** | 2026-04-28 | 单仓 LLM patch 真改业务代码 (#22→!27)；R-14.6 防幻觉护栏 | [single-repo-v1.0.4.md](./single-repo-v1.0.4.md) |
 | **single-repo/v1.0.0~v1.0.3** | 2026-04-25~28 | 单仓 7 阶段闭环 (#18→!24)；K8s preview 真起；S7 真发 MR | [single-repo-v1.0.x.md](./single-repo-v1.0.x.md) |
