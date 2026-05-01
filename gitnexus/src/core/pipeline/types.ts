@@ -171,7 +171,20 @@ export interface CrossLinkOutput {
     startLine?: number;
     label?: 'Method' | 'Function';
   };
-  matchType: 'cypher-name+path' | 'cypher-name-only';
+  /**
+   * matchType 来源:
+   *  - 'exact' / 'wildcard' / 'manifest' — 主流标准链路 (bridge.lbug ContractLink, conf=1.0)
+   *  - 'cypher-name+path' / 'cypher-name-only' — DIY fallback (mcp-bridge.crossBlastRadius, conf=0.4-0.7)
+   *
+   * 兼容性扩展 (lbug-切换-回归测试-环境清单-v1.md D1): 旧 mock 路径仍用 'cypher-name+path',
+   * 新主路径用 'exact' / 'manifest' / 'wildcard'. union 加成员, 不破坏现有 caller.
+   */
+  matchType:
+    | 'exact'
+    | 'wildcard'
+    | 'manifest'
+    | 'cypher-name+path'
+    | 'cypher-name-only';
   confidence: number;
 }
 

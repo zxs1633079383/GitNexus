@@ -11,14 +11,16 @@ import type { HttpDetection, HttpLanguagePlugin } from './types.js';
 /**
  * Java HTTP plugin. Handles:
  *   - Spring `@RequestMapping` class prefixes + `@(Get|Post|...)Mapping` method annotations
+ *   - Micronaut `@Controller("/path")` class prefixes + `@(Get|Post|Put|Delete|Patch)("/path")` method annotations
  *   - Spring `RestTemplate.getForObject/...`, `WebClient.method(HttpMethod.X, ...)`
  *   - OkHttp `new Request.Builder().url("...")`
  *
- * The plugin runs two pattern bundles: one to collect class-level
- * `@RequestMapping` prefixes keyed by the enclosing class node, and a
- * second to match method-level annotations. The `scan` function walks
- * up from each matched annotation to find its enclosing class and
- * combines the prefix with the method path.
+ * The plugin runs separate pattern bundles for Spring vs Micronaut class-level
+ * prefixes (annotations live in different namespaces) and method-level annotations.
+ * Method annotations differ: Spring uses `@(Get|Post|...)Mapping`, Micronaut
+ * uses `@(Get|Post|...)` (no `Mapping` suffix). The `scan` function walks
+ * up from each matched annotation to find its enclosing class and combines
+ * the prefix with the method path.
  */
 
 const METHOD_ANNOTATION_TO_HTTP: Record<string, string> = {
@@ -27,6 +29,16 @@ const METHOD_ANNOTATION_TO_HTTP: Record<string, string> = {
   PutMapping: 'PUT',
   DeleteMapping: 'DELETE',
   PatchMapping: 'PATCH',
+};
+
+// Micronaut: `@Get`/`@Post`/... (no `Mapping` suffix). `Options`/`Head`/`Trace`
+// also exist but are rarely cross-repo contracts; keep parity with Spring set.
+const MICRONAUT_METHOD_ANNOTATION_TO_HTTP: Record<string, string> = {
+  Get: 'GET',
+  Post: 'POST',
+  Put: 'PUT',
+  Delete: 'DELETE',
+  Patch: 'PATCH',
 };
 
 // ─── Provider: Spring class-level @RequestMapping prefix ──────────────
@@ -59,6 +71,46 @@ const SPRING_METHOD_ROUTE_PATTERNS = compilePatterns({
           (modifiers
             (annotation
               name: (identifier) @ann (#match? @ann "^(Get|Post|Put|Delete|Patch)Mapping$")
+              arguments: (annotation_argument_list (string_literal) @path)))
+          name: (identifier) @method_name) @method
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<Record<string, never>>);
+
+// ─── Provider: Micronaut class-level @Controller("/prefix") ────────────
+// `@Controller` 也可以无参 (路径 = 类名 lowercase 启发式), 这里只匹配带
+// string_literal 第一个 argument 的形态; 无参 controller 暂不抽 (跟 Spring
+// `@RestController` 一致).
+const MICRONAUT_CLASS_PREFIX_PATTERNS = compilePatterns({
+  name: 'java-micronaut-class-prefix',
+  language: Java,
+  patterns: [
+    {
+      meta: {},
+      query: `
+        (class_declaration
+          (modifiers
+            (annotation
+              name: (identifier) @ann (#eq? @ann "Controller")
+              arguments: (annotation_argument_list (string_literal) @prefix)))) @class
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<Record<string, never>>);
+
+// ─── Provider: Micronaut @(Get|Post|...) method annotations (无 Mapping 后缀) ──
+const MICRONAUT_METHOD_ROUTE_PATTERNS = compilePatterns({
+  name: 'java-micronaut-method-route',
+  language: Java,
+  patterns: [
+    {
+      meta: {},
+      query: `
+        (method_declaration
+          (modifiers
+            (annotation
+              name: (identifier) @ann (#match? @ann "^(Get|Post|Put|Delete|Patch)$")
               arguments: (annotation_argument_list (string_literal) @path)))
           name: (identifier) @method_name) @method
       `,
@@ -177,7 +229,9 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
   scan(tree) {
     const out: HttpDetection[] = [];
 
-    // ─── Providers: Spring class prefix + method annotations ────────
+    // ─── Providers: collect class-level prefixes (Spring + Micronaut 共用同一 map) ──
+    // 一个 class 不会同时挂 @RequestMapping 和 @Controller, 所以 classNode.id
+    // 做 key 不会冲突.
     const prefixByClassId = new Map<number, string>();
     for (const match of runCompiledPatterns(SPRING_CLASS_PREFIX_PATTERNS, tree)) {
       const prefixNode = match.captures.prefix;
@@ -186,7 +240,15 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
       const prefix = unquoteLiteral(prefixNode.text);
       if (prefix !== null) prefixByClassId.set(classNode.id, prefix);
     }
+    for (const match of runCompiledPatterns(MICRONAUT_CLASS_PREFIX_PATTERNS, tree)) {
+      const prefixNode = match.captures.prefix;
+      const classNode = match.captures.class;
+      if (!prefixNode || !classNode) continue;
+      const prefix = unquoteLiteral(prefixNode.text);
+      if (prefix !== null) prefixByClassId.set(classNode.id, prefix);
+    }
 
+    // ─── Providers: Spring @(Get|Post|...)Mapping methods ────────────
     for (const match of runCompiledPatterns(SPRING_METHOD_ROUTE_PATTERNS, tree)) {
       const annNode = match.captures.ann;
       const pathNode = match.captures.path;
@@ -203,6 +265,30 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
       out.push({
         role: 'provider',
         framework: 'spring',
+        method: httpMethod,
+        path: fullPath,
+        name: nameNode?.text ?? null,
+        confidence: 0.8,
+      });
+    }
+
+    // ─── Providers: Micronaut @(Get|Post|...) methods (无 Mapping 后缀) ─
+    for (const match of runCompiledPatterns(MICRONAUT_METHOD_ROUTE_PATTERNS, tree)) {
+      const annNode = match.captures.ann;
+      const pathNode = match.captures.path;
+      const nameNode = match.captures.method_name;
+      const methodNode = match.captures.method;
+      if (!annNode || !pathNode || !methodNode) continue;
+      const httpMethod = MICRONAUT_METHOD_ANNOTATION_TO_HTTP[annNode.text];
+      if (!httpMethod) continue;
+      const rawPath = unquoteLiteral(pathNode.text);
+      if (rawPath === null) continue;
+      const enclosingClass = findEnclosingClass(methodNode);
+      const prefix = enclosingClass ? (prefixByClassId.get(enclosingClass.id) ?? '') : '';
+      const fullPath = joinPath(prefix, rawPath);
+      out.push({
+        role: 'provider',
+        framework: 'micronaut',
         method: httpMethod,
         path: fullPath,
         name: nameNode?.text ?? null,

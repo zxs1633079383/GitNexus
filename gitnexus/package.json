@@ -52,7 +52,7 @@
   },
   "dependencies": {
     "@huggingface/transformers": "^4.1.0",
-    "@ladybugdb/core": "^0.15.2",
+    "@ladybugdb/core": "^0.16.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@scarf/scarf": "^1.4.0",
     "cli-progress": "^3.12.0",
@@ -109,7 +109,8 @@
     "@huggingface/transformers": {
       "onnxruntime-node": "$onnxruntime-node"
     },
-    "tree-sitter-c": "0.23.2"
+    "tree-sitter-c": "0.23.2",
+    "@ladybugdb/core-darwin-x64": "npm:@lichao176/ladybug-core-darwin-x64@0.16.0"
   },
   "engines": {
     "node": ">=20.0.0"

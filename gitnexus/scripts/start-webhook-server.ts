@@ -50,6 +50,9 @@ import {
   parseMethodId,
   crossBlastRadius,
 } from './mcp-bridge.js';
+// D1 (lbug-切换-v1 §D1): 主路径优先调标准链路 (bridge.lbug ContractLink, conf=1.0).
+// miss/error 时 fallback 到 mcp-bridge.crossBlastRadius (DIY, conf=0.4-0.7).
+import { lookupStandardCrossLink } from '../src/core/group/standard-cross-link.js';
 import { runPatch, violatesSafetyPolicy } from './patch-runner.js';
 import { execFile as execFileCb, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -68,6 +71,9 @@ const PORT = Number(process.env.PORT ?? 3034);
 const PROVIDER_KIND = process.env.GITNEXUS_PROVIDER ?? 'gitlab';
 const BRIDGE_REPO_DEFAULT = process.env.GITNEXUS_BRIDGE_REPO ?? 'cses-java';
 const BRIDGE_REPO_MAP_RAW = process.env.GITNEXUS_BRIDGE_REPO_MAP ?? '';
+// D1 (lbug-切换-v1 §D1): 标准链路 group name (default cses-mm).
+// lookupStandardCrossLink 用它定位 ~/.gitnexus/groups/<GROUP_NAME>/bridge.lbug.
+const GROUP_NAME = process.env.GITNEXUS_GROUP_NAME ?? 'cses-mm';
 
 function parseJsonEnv<T = Record<string, string>>(raw: string, name: string): T | null {
   if (!raw) return null;
@@ -636,9 +642,32 @@ function buildDeps(fullName: string): OrchestratorDeps {
     },
 
     // cross-repo/v1.0.0: partners 非空才装. 装上后 orchestrator 自动调用.
+    //
+    // D1 (lbug-切换-v1 §D1): 主路径 → 标准链路 lookupStandardCrossLink (bridge.lbug
+    // ContractLink, conf=1.0). 0 命中 → fallback DIY mcp-bridge.crossBlastRadius
+    // (conf=0.4-0.7). 这样:
+    //   - manifest links 已配的 contract → 主路径命中 conf=1.0
+    //   - 未配 + extractor 也没自动抽到 → DIY 兜底, 维持 v2.1 现状不退化
+    //   - extractor 完善后 ContractLink 自动产, 无需再改 wiring
     crossBlastRadius:
       partners.length > 0 && bridgeOk
         ? async (p) => {
+            // 1) 主路径: bridge.lbug ContractLink (manifest / exact / wildcard, conf=1.0)
+            try {
+              const std = await lookupStandardCrossLink({
+                groupName: GROUP_NAME,
+                primaryRepo: repo,
+                contractId: p.contractId,
+              });
+              if (std.length > 0) {
+                return std;
+              }
+            } catch (e) {
+              console.warn(
+                `[orchestrator-deps] standard-cross-link miss, fallback DIY: ${(e as Error).message}`,
+              );
+            }
+            // 2) Fallback: DIY mcp-bridge.crossBlastRadius (按命名约定猜, conf=0.4-0.7)
             const links = await crossBlastRadius(
               {
                 contractId: p.contractId,
