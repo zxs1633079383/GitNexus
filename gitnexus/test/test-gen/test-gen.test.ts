@@ -8,6 +8,7 @@ import {
   detectLanguage,
   generateTestScaffolds,
 } from '../../src/core/test-gen/generator.js';
+import { parseMethodId } from '../../scripts/mcp-bridge.js';
 
 const GRAPH: Record<string, any> = {
   'Route:/api/load': {
@@ -159,5 +160,63 @@ describe('Stage 5 · generator + adapters', () => {
     const integration = out.files.find((f) => f.layer === 'integration');
     expect(integration?.filePath).toMatch(/foo\.integration\.test\.ts$/);
     expect(integration?.content).toContain("describe('[integration] foo'");
+  });
+});
+
+// issue#68: S5 genE2ETests 文件名回归测试 ─────────────────────────────────────
+// 验证 parseMethodId 解析 #N suffix UID 能取到真 method 名，
+// 进而生成 Test_<methodName>.java 而非 Test_unknown.java
+describe('S5 · genE2ETests 文件名由真 handler.name 派生 (issue#68)', () => {
+  it('#N-suffix UID → parseMethodId 返回真 method 名 triggerLoadIncrement', () => {
+    const uid =
+      'Method:server/src/main/java/org/cses/CrossRepoDemoController.java:CrossRepoDemoController.triggerLoadIncrement#2';
+    const parsed = parseMethodId(uid);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.name).toBe('CrossRepoDemoController.triggerLoadIncrement');
+  });
+
+  it('#N-suffix UID → safeName 不含 unknown，生成文件名不等于 Test_unknown.java', () => {
+    const uid =
+      'Method:server/src/main/java/org/cses/CrossRepoDemoController.java:CrossRepoDemoController.triggerLoadIncrement#2';
+    const parsed = parseMethodId(uid);
+    const safeName = (parsed?.name ?? 'unknown').replace(/[^A-Za-z0-9_]/g, '_').slice(0, 40);
+    expect(safeName).not.toBe('unknown');
+    // slice(0,40) 截到 "CrossRepoDemoController_triggerLoadIncre"
+    // 关键: 不是 unknown，且包含真 class 名前段
+    expect(safeName).toMatch(/^CrossRepoDemoController/);
+    expect(`Test_${safeName}.java`).not.toBe('Test_unknown.java');
+  });
+
+  it('manifest synthetic UID (无 # 且无行号) → parseMethodId 返回 null → fallback unknown 向后兼容', () => {
+    // manifest 合成 UID 通常形如 Method:http__POST___api_foo (无文件路径段 + 无行号)
+    const syntheticUid = 'Method:http__POST___api_triggerLoadIncrement';
+    const parsed = parseMethodId(syntheticUid);
+    // regex 无法匹配 → null → safeName = 'unknown' (向后兼容)
+    expect(parsed).toBeNull();
+    const safeName = (parsed?.name ?? 'unknown').replace(/[^A-Za-z0-9_]/g, '_').slice(0, 40);
+    expect(safeName).toBe('unknown');
+  });
+
+  it('Java JUnit5 adapter fileFor: baseName=triggerLoadIncrement → 含 triggerLoadIncrement', async () => {
+    const t = await traverseChain(
+      'Method:handler',
+      async (uid) =>
+        uid === 'Method:handler'
+          ? { name: 'triggerLoadIncrement', kind: 'Method', filePath: 'src/CrossRepoDemoController.java', startLine: 1 }
+          : null,
+      async () => [],
+    );
+    const out = generateTestScaffolds({
+      traversal: t,
+      baseName: 'triggerLoadIncrement',
+      language: detectLanguage('src/CrossRepoDemoController.java'),
+      contractLinks: new Set(),
+    });
+    expect(out.language).toBe('java');
+    // 每个生成文件的路径必须包含 triggerLoadIncrement, 不含 unknown
+    for (const f of out.files) {
+      expect(f.filePath).toContain('TriggerLoadIncrement');
+      expect(f.filePath).not.toContain('Unknown');
+    }
   });
 });

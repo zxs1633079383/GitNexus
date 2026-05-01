@@ -94,6 +94,30 @@ describe('parseMethodId', () => {
     expect(out).toEqual({ filePath: 'weird:path:with:colons.java', name: 'foo', line: 42 });
   });
 
+  it('#N hash-suffix 格式 (issue#68 evidence) → 取到真 method 名', () => {
+    // UID 形式: Method:filePath:ClassName.methodName#N (无独立 :lineNumber 段)
+    const out = parseMethodId(
+      'Method:server/src/main/java/org/cses/CrossRepoDemoController.java:CrossRepoDemoController.triggerLoadIncrement#2',
+    );
+    expect(out).toEqual({
+      filePath: 'server/src/main/java/org/cses/CrossRepoDemoController.java',
+      name: 'CrossRepoDemoController.triggerLoadIncrement',
+      line: 2,
+    });
+  });
+
+  it('标准格式 name 含 #N 歧义序号也能剥掉', () => {
+    // Method:filePath:methodName#2:93 → name 应为 "methodName" 不带 #2
+    const out = parseMethodId(
+      'Method:server/src/main/java/Foo.java:invoke#1:93',
+    );
+    expect(out).toEqual({
+      filePath: 'server/src/main/java/Foo.java',
+      name: 'invoke',
+      line: 93,
+    });
+  });
+
   it('不合法格式 → null', () => {
     expect(parseMethodId('Function:foo')).toBeNull();
     expect(parseMethodId('not a method')).toBeNull();

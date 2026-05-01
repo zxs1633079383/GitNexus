@@ -183,9 +183,21 @@ export async function callCypher(
 export function parseMethodId(
   id: string,
 ): { filePath: string; name: string; line: number } | null {
+  // 1.4.1 标准格式: Method:filePath:methodName:lineNumber
   const m = /^(?:Method|Function):(.+):([^:]+):(\d+)$/.exec(id);
-  if (!m) return null;
-  return { filePath: m[1], name: m[2], line: Number(m[3]) };
+  if (m) {
+    // name 可能带 #N 歧义序号 (e.g. "loadSnapshot#2")，剥掉后缀取纯 method 名
+    const rawName = m[2];
+    const name = rawName.replace(/#\d+$/, '');
+    return { filePath: m[1], name, line: Number(m[3]) };
+  }
+  // 衍生格式: Method:filePath:methodName#N (行号用 # 分隔，无独立 :lineNumber 段)
+  // e.g. Method:...CrossRepoDemoController.java:CrossRepoDemoController.triggerLoadIncrement#2
+  const m2 = /^(?:Method|Function):(.+):([^:]+?)#(\d+)$/.exec(id);
+  if (m2) {
+    return { filePath: m2[1], name: m2[2], line: Number(m2[3]) };
+  }
+  return null;
 }
 
 /** 反转义 cypher 字面量 (双引号字符串)。1.4.1 cypher 不允许 SET 等 write op，过滤掉。 */
@@ -690,11 +702,15 @@ export interface ContractResolvedHandler {
   filePath: string;
   name: string;
   startLine?: number;
-  /** 节点 label, KuzuDB 1.4.1 区分 Method (Java/etc.) / Function (Go/Rust/TS 顶层 func) */
+  /** 节点 label, GitNexus 1.6.x KuzuDB schema 区分 Method (Java/etc.) / Function (Go/Rust/TS 顶层 func) */
   label: 'Method' | 'Function';
-  /** cypher-name+path = 双过滤命中 (parent path 段); cypher-name-only = 仅 name 匹配 */
-  matchType: 'cypher-name+path' | 'cypher-name-only';
-  /** 0-1; cypher-name+path = 0.7, cypher-name-only = 0.4 (假阳性风险) */
+  /**
+   * cypher-name+path = 双过滤命中 (parent path 段)
+   * cypher-name-only = 仅 name 匹配 (含 fuzzy lower STARTS WITH 兜底)
+   * cypher-go-path-only = B2 (v1.2): Go path-only anchor — path 末段 lower/UpperCamel 直查 Function (无 file filter)
+   */
+  matchType: 'cypher-name+path' | 'cypher-name-only' | 'cypher-go-path-only';
+  /** 0-1; name+path=0.7, name-only=0.4, go-path-only=0.5 (B2, 介于两者之间) */
   confidence: number;
 }
 
@@ -779,11 +795,41 @@ export async function resolveHandlerByContract(
     matchType = 'cypher-name-only';
   }
 
-  // ③ 模糊兜底: lower(name) STARTS WITH lower(末段) — 解决 normalizeConsumerPath
-  //    把 path lowercase 后 candidates 丢失 camelCase 信息的问题.
-  //    例: trace 路径 /api/cses/posts/getSchedule → lower → "getschedule",
-  //    candidates 生成 ['getschedulePost',...] 都不匹配真 Go handler "getScheduledPost"
-  //    (含 "d"). 用 lower("getScheduledPost") STARTS WITH "getschedule" 直接命中.
+  // ③ B2 (v1.2 sprint, 2026-05-01): Go path-only anchor — path 末段 case-preserved
+  //    + UpperCamel form 直查 :Function (不带 file filter, 不带 parent 拼接).
+  //    用 case 前 B1 已修, 末段 `incrementByChannelId` 现在能匹配同名 Go function.
+  //    confidence 0.5 (高于 name-only fallback 0.4, 低于 name+path 双过滤 0.7).
+  //
+  //    适用: Go REST 命名规范的仓 (path 末段 ≈ Go function name, 例: /api/X/loadFoo
+  //    → handler `LoadFoo`/`loadFoo`).
+  //    不适用: handler 命名跟 path 末段差距大的仓 (例: mattermost csesapi
+  //    `/load/incrementByChannelId` → handler `loadSingleIncrementChannel` 含 "Single").
+  //    那种 case 需要 B4 (BaseRoutes chain extractor) 抽取真 router → handler 关系.
+  if (merged.length === 0) {
+    const lastSeg = pathSegments[pathSegments.length - 1];
+    if (lastSeg.length >= 4 && /^[A-Za-z][A-Za-z0-9]*$/.test(lastSeg)) {
+      const lastUpper = lastSeg.charAt(0).toUpperCase() + lastSeg.slice(1);
+      const lastLower = lastSeg.charAt(0).toLowerCase() + lastSeg.slice(1);
+      const goPred = [lastSeg, lastUpper, lastLower]
+        .filter((v, i, a) => a.indexOf(v) === i)
+        .map((c) => `n.name = "${escLiteral(c)}"`)
+        .join(' OR ');
+      const goR = await callCypher(
+        `MATCH (n:Function) WHERE (${goPred}) AND NOT n.filePath CONTAINS "test" RETURN n.id AS id, n.name AS name, n.filePath AS file, n.startLine AS line LIMIT 5`,
+        opts.repo,
+        fetchImpl,
+      );
+      if (goR.rows.length > 0) {
+        merged = goR.rows.map((r) => ({ ...r, label: 'Function' as const })) as Row[];
+        matchType = 'cypher-go-path-only';
+      }
+    }
+  }
+
+  // ④ 模糊兜底: lower(name) STARTS WITH lower(末段) — 解决命名差距大的 case.
+  //    例: trace 路径 /api/cses/posts/getSchedule, candidates 生成
+  //    ['getSchedulePost',...] 都不匹配真 Go handler "getScheduledPost" (含 "d").
+  //    用 lower("getScheduledPost") STARTS WITH "getschedule" 直接命中.
   //    confidence 0.25 (假阳性最高: e.g. "getScheduledPost" 也会命中 "getSchedule").
   if (merged.length === 0) {
     const last = pathSegments[pathSegments.length - 1].toLowerCase();
@@ -854,7 +900,14 @@ export async function resolveHandlerByContract(
       startLine: Number.isFinite(ln) ? ln : undefined,
       label: cand.label,
       matchType,
-      confidence: matchType === 'cypher-name+path' ? 0.7 : isFuzzyTier3 ? 0.25 : 0.4,
+      confidence:
+        matchType === 'cypher-name+path'
+          ? 0.7
+          : matchType === 'cypher-go-path-only'
+            ? 0.5
+            : isFuzzyTier3
+              ? 0.25
+              : 0.4,
     };
   }
   return null; // 所有候选都是孤立符号 / verify 失败
