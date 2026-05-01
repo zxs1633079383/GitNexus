@@ -586,3 +586,82 @@ if (!r.ok && action === 'PUT' && r.status === 400) {
 - cses MR !45  (issue #61, LLM 真改 Java 代码, $0.91)
 - mattermost MR !9 (issue #25, LLM Go advisory, put-files fix 验证 ★)
 
+
+---
+
+## 6. 真巡检 #62 真证据 + 暴露 2 真问题
+
+### 6.1 真巡检完整闭环 (issue #26 + #62)
+
+走通"巡检 → issue → webhook → 7 阶段 → 真 MR"全无人工干预闭环, **不内嵌 spans, webhook 自取真 Jaeger trace**:
+
+| issue | 真 traceID | service | 真 MR | 备注 |
+|---|---|---|---|---|
+| mattermost #26 | `56c8318bf17c6c22` (慢请求) | mattermost | **MR !10** opened | webhook 真自取 Jaeger spans=2 ✅ |
+| cses #62 | `43506ebd0102680d` (真 cross-repo error) | mattermost csesapi | 🚫 S7 rejected | 真问题暴露 (见 §6.2) |
+
+### 6.2 真巡检 #62 暴露的 2 个真问题
+
+真 Jaeger trace `43506ebd0102680d` 是真生产 mattermost cross-repo error:
+- 顶 op: `POST /api/cses/channel/load/incrementByChannelId` (跨仓 csesapi)
+- error.object: `parallel load increment data: load user member in channel: ent: channel_member not found`
+- 子 span: `app.LoadSingleIncrementChannel` (mattermost server-side handler)
+
+7 阶段评论 (note_933):
+
+```
+S2 ✅ 196ms — 2 spans → 0 handlers ❌
+S3 ⚠️ skipped — no resolved handler (但 P3 跨仓探测已查 1 contract: incrementbychannelid)
+S4 ✅ 0ms — 0 嫌疑 commit (no topFrame.file)
+S5 ⚠️ skipped — no resolved handler
+S6 ⚪ skipped — no handler to validate
+S7 🚫 rejected — Stage 6 did not pass; require_stage6_pass=true
+```
+
+**真问题 #1 — Go trace 0 stacktrace, S2 anchor 失败**:
+- 真 mattermost trace 只有 `http.method/http.url` 2 个 tag, **无 stacktrace + 无 code.function**
+- Phase 0 顶帧反查无 input
+- B-strong contract-strong: 用 path 推命名约定 → 真 Go handler `LoadSingleIncrementChannel` 跟 path 末段 `incrementByChannelId` 命名差别大, 没命中
+- → S2 0 handlers
+
+**真问题 #2 — path 归一化 lowercase 副作用**:
+- 真 path: `/api/cses/channel/load/incrementByChannelId`
+- normalizeConsumerPath 后: `incrementbychannelid` (camelCase 全丢)
+- tier-3 lowercase 模糊匹配也无法救 (没了 `Channel` 边界, 候选爆炸)
+- → 即使 manifest 配了原 path, normalize 后也对不上
+
+### 6.3 v1.2 sprint backlog (next 4 项)
+
+| backlog | 触发 | 优先级 | 改动点 |
+|---|---|---|---|
+| **B1 · path 归一化保留 camelCase** | #62 真问题 #2 | 高 | `mcp-bridge.normalizeConsumerPath` + `matching.normalizeHttpPath` 不 lowercase 末段, 或加 case-aware 二级匹配 |
+| **B2 · Go trace path-only anchor 增强** | #62 真问题 #1 | 高 | mcp-bridge 加 Go-aware 模式: path 末段 `XxxYyy` (UpperCamel) 推 Go function 名 `XxxYyy` (Go 公开函数同款) |
+| **B3 · manifest 扩到 80+ csesapi 真接口** | manifest 13 条覆盖率不足 | 中 | scripts/bootstrap 扩列表 (含 channel/load/incrementByChannelId 等真生产接口) |
+| **B4 · mattermost HttpRouteExtractor BaseRoutes chain 抽取** | path 1B-A backlog | 中 | go.ts 加 `BaseRoutes.<X>.Handle(p).Methods(m)` chain 模式 + ApiRoot prefix 跟踪 |
+
+完成后预期: 真 mattermost cross-repo error trace 在 S2 直接 anchor 真 handler + S3 主路径 conf=1.00 命中 + 真发 MR. 不再依赖 stacktrace 和 manifest 兜底.
+
+### 6.4 已落地 vs 待办 总览 (v1.1 → v1.2)
+
+```
+✅ v1.1 (本 sprint)
+  - lbug 切换 (Intel Mac #436 解阻塞)
+  - 主流标准链路 wiring (lookupStandardCrossLink, 5 段 15 task)
+  - 双 MR 真发: cses !45 + mattermost !9
+  - 真 Jaeger trace 闭环 (mattermost !10 真自取)
+  - put-files PUT-400-fallback-POST fix
+  - Micronaut HTTP plugin (cses 1037 routes)
+
+🟡 v1.2 (next sprint)
+  - path 归一化 camelCase 保留 (B1)
+  - Go trace path-only anchor (B2)
+  - manifest 扩 80+ csesapi 接口 (B3)
+  - mattermost BaseRoutes chain 抽取 (B4)
+  - 撤 lichao176 fork override (等上游 0.16.1)
+```
+
+---
+
+## 7. 旧版 §6 回滚预案 (保留)
+
+> 注: §7 起为原 §6 内容, lbug-switch v1.1 收尾后下移. 内容不变.

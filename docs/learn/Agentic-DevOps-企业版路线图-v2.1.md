@@ -337,3 +337,69 @@ da530cfd  fix(orchestrator): S5 仅对 Java handler 生成 scaffold, Go/Rust/TS 
 - docs/learn/tags/ 12 个 tag 描述（含 observe-pipeline-integration.md / cross-repo-v1.0.0.md / eval-server-stability-analysis.md 等）
 - knowledge base score 100/100（170 知识点，L6 #151-#170 本轮新增 20 个）
 - gitnexus-knowledge SKILL + gitnexus-dev agent 已重生成
+
+---
+
+## 11. lbug-switch v1.1 sprint 增量 (2026-04-30 ~ 05-01)
+
+> 配套文档: [lbug-切换-回归测试-环境清单-v1.md](./lbug-切换-回归测试-环境清单-v1.md)
+> tag: `lbug-switch/v1.0.0-LIVE` (cses MR !45) + `lbug-switch/v1.1.0-LIVE` (mattermost MR !9)
+
+### 11.1 主线
+
+把 §10 候选 "切回 GitNexus 原生 cross-impact.ts" **真落地** —— 解 LadybugDB#436 (Intel Mac darwin-x64 prebuild 缺) → fork & republish `@lichao176/ladybug-core-darwin-x64@0.16.0` 到公网 npm 临时桥 → orchestrator wiring 主路径切到 `lookupStandardCrossLink` (bridge.lbug ContractLink, conf=1.00), DIY `mcp-bridge.crossBlastRadius` 退到 fallback (conf=0.4-0.7).
+
+### 11.2 v2.1 §10 候选 状态更新
+
+| 候选 | v2.1 状态 | v1.1 状态 |
+|---|---|---|
+| 切回 GitNexus 原生 cross-impact.ts | 阻塞 ladybugdb prebuilt | ✅ **落地** (lbug-switch v1.1) |
+| stacktrace 顶帧多帧解析 | backlog | 🟡 仍 backlog (v1.2 含 B2 Go trace 解析) |
+| 语义 alias 词典 | backlog | 🟡 仍 backlog (v1.2 含 B1 case 保留) |
+| R-4 双 App 拆分 | 团队政策阻塞 | 🟡 仍 backlog |
+| OCaml LanguageProvider | 业务需求 | 🟡 仍 backlog |
+
+### 11.3 v1.1 真增量 (落地)
+
+| 增量 | 文件 | 真证据 |
+|---|---|---|
+| ① npm 桥 (@lichao176 fork) | 公网 npm | size=5.6MB, sha512=BTjVRUrK..., dist-tag latest |
+| ② Java HTTP plugin Micronaut 模式 | `core/group/extractors/http-patterns/java.ts` | cses 仓 routes 0 → **1037** (+12000%) |
+| ③ standard-cross-link wiring | `core/group/standard-cross-link.ts` + `start-webhook-server.ts:639` | matchType=manifest, conf=1.00 ★ |
+| ④ CrossLinkOutput.matchType union 扩 | `core/pipeline/types.ts` | 兼容性扩 'exact'/'wildcard'/'manifest', mock 不破 |
+| ⑤ GitLab put-files PUT-400-fallback-POST | `core/auto-pr/providers/gitlab.ts` | mattermost MR !9 真发 (新文件 POST 创建) |
+
+### 11.4 双 MR 真发集齐 + 真 Jaeger 闭环
+
+| MR | source | LLM | 验证点 |
+|---|---|---|---|
+| cses !45 | issue #61 (合成 trace) | $0.91 真断言 | R-14.6 真 patch + StubMattermostClient mock + assertThrows |
+| mattermost !9 | issue #25 (合成 trace) | $0.46 abort | put-files fix 真生效 (advisory 报告新文件创建) |
+| mattermost !10 | issue #26 ★ 真 Jaeger 56c8b | $0.37 abort | webhook 自取 traceUrl 真证据 (spans=2 fetched) |
+
+### 11.5 真巡检 #62 暴露 v1.2 backlog
+
+真 mattermost cross-repo error trace `43506ebd` (`incrementByChannelId`) → S2 0 handlers (path lowercase + Go trace 无 stacktrace 双重). 暴露 v2.2 → **v1.2** sprint 4 项 backlog (见 lbug-切换 文档 §6.3):
+
+| backlog | 优先级 |
+|---|---|
+| B1 path 归一化保留 camelCase | 高 |
+| B2 Go trace path-only anchor 增强 | 高 |
+| B3 manifest 扩 80+ csesapi 接口 | 中 |
+| B4 mattermost BaseRoutes chain extractor | 中 |
+| B5 撤 lichao176 fork override (等上游 0.16.1) | 低 |
+
+### 11.6 主航道约束验证 (全保留)
+
+- ✅ 7 阶段闭环不新增 stage (改动全在 S2/S3/S5/S6/S7 内部 + ORCH wiring)
+- ✅ OrchestratorDeps 接口签名 0 改动 (matchType union 兼容性扩)
+- ✅ K8s 写操作只打 `gitnexus-preview-*` ns
+- ✅ R-12 auto-pr-policy block 列表完整保留
+- ✅ R-14 patch-LLM systemPrompt 隔离 + R-14.6 真断言
+- ✅ LIVE 三因子真发 MR (label + env + S6 真绿勾)
+
+### 11.7 回归测试
+
+- 31/31 tests pass (orchestrator + cross-impact + manifest-extractor)
+- 24/24 tests pass (lbug-adapter + pool-adapter + bridge-db)
+- 12/12 tests pass (auto-pr providers, 含 put-files fix)

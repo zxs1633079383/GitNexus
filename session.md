@@ -1109,3 +1109,56 @@ docs/learn/tags/
 ```
 
 每篇结构: 目标 / 改动 / 真 evidence / 已知 backlog / 下一里程碑。
+
+---
+
+## 24. lbug-switch v1.1 sprint 沉淀 (2026-04-30 ~ 05-01)
+
+**主线**: 解 LadybugDB#436 (Intel Mac darwin-x64 prebuild 缺) → 把 Agentic DevOps S3 跨仓**从 DIY 切回主流标准链路 (bridge.lbug ContractLink + lookupStandardCrossLink)** → LIVE 三因子真发双仓 MR.
+
+### 24.1 真硬实证 (3 个 LIVE 真发 MR)
+
+| MR | iid | LLM | 内容 | 真触发 |
+|---|---|---|---|---|
+| cses !45 | issue #61 (合成) | $0.91 / 127s, fix=1 + tests=1 | MattermostClient.java refactor (doCreatePost + null wrapper) + 真 JUnit 5 + StubMattermostClient mock | LIVE 三因子真发 |
+| mattermost !9 | issue #25 (合成) | $0.46 / 33s, abort | advisory 报告 + put-files PUT-400-fallback-POST fix 验证 | LIVE 三因子真发 |
+| mattermost !10 | issue #26 (★ 真 Jaeger 56c8b) | $0.37 / 25s, abort | 真 Jaeger trace 自取 + advisory 报告 | webhook 自取 traceUrl 真证据 |
+
+### 24.2 真主流核心证据
+
+```
+旧 (DIY):  matchType='cypher-name+path' / 'cypher-name-only', conf=0.4-0.7 (按命名约定猜)
+新 (主流): matchType='manifest', confidence=1.00 (bridge.lbug ContractLink 真表)
+```
+
+issue #61 评论 note_913 + #25 note_920 都显示 `(POST::/api/cses/posts/create, manifest, conf=1.00)`.
+
+### 24.3 commits + tags
+
+```
+d89d2c76  feat(agentic-devops): lbug 切换 + 主流标准链路 + LIVE 真发 (cses MR !45)
+d946e424  fix(auto-pr): GitLab put-files PUT-400-fallback-POST + mattermost MR !9 真发
+
+tag: lbug-switch/v1.0.0-LIVE  (cses MR !45)
+tag: lbug-switch/v1.1.0-LIVE  (mattermost MR !9 + put-files fix)
+```
+
+### 24.4 真巡检 #62 暴露的 v1.2 backlog (next sprint)
+
+真 mattermost cross-repo error trace `43506ebd0102680d` (`/api/cses/channel/load/incrementByChannelId`, `channel_member not found`) 跑 LIVE pipeline → S2 0 handlers → S5/S6/S7 全 skip → S7 rejected.
+
+**root cause**:
+- B1 path 归一化把 camelCase 全 lowercase (incrementByChannelId → incrementbychannelid), tier-3 模糊也救不回
+- B2 Go trace 无 stacktrace + 无 code.function tag, Phase 0 + B-strong 都 anchor 失败
+
+**v1.2 sprint backlog** (4 项):
+1. B1 path 归一化保留 camelCase (matching.normalizeHttpPath / mcp-bridge.normalizeConsumerPath)
+2. B2 Go trace path-only anchor 增强 (UpperCamel path 末段 → Go function 名)
+3. B3 manifest 扩 80+ csesapi 接口 (现 13 条覆盖率不足)
+4. B4 mattermost HttpRouteExtractor BaseRoutes chain 抽取 (路 1B-A)
+
+### 24.5 文档同步
+
+- `docs/learn/lbug-切换-回归测试-环境清单-v1.md` §1-§7 完整 (5 段 + LIVE evidence + #62 backlog)
+- `docs/learn/Agentic-DevOps-企业版路线图-v2.1.md` §11 加 lbug-switch v1.1 sprint
+- `docs/learn/diagrams/16-agentic-devops-7-stage-loop.mmd` 升级标 v1.1 LIVE evidence
