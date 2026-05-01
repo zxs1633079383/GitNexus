@@ -1255,13 +1255,40 @@ bc07e4c5  fix(test-gen): R-1 scaffold 用真 handler.name 生成 Test_<methodNam
 tag: lbug-switch/v1.0.0-LIVE        (cses MR !45)
 tag: lbug-switch/v1.1.0-LIVE        (mattermost MR !9 + put-files fix)
 tag: lbug-switch/v1.1.1-docs        (docs sync)
-tag: lbug-switch/v1.2.0-slow-skip   (slow trace 分流 phase 1)
-tag: lbug-switch/v1.2.1-b1-path-camel  (待打 — B1 落地)
-tag: lbug-switch/v1.2.2-docs           (待打 — docs 同步收尾)
-tag: lbug-switch/v1.2.0-LIVE           (待打 — sprint final 闭环, 双向 6 MR 集齐)
+tag: lbug-switch/v1.2.0-slow-skip   (slow trace 分流 phase)
+tag: lbug-switch/v1.2.1-b1-path-camel  ✅ (B1 落地, 锚 e7c688b1)
+tag: lbug-switch/v1.2.2-docs           ✅ (docs 同步 phase, 锚 8c935178)
+tag: lbug-switch/v1.2.0-LIVE           ✅ (sprint LIVE 双向 6 MR 集齐, 锚 8c935178)
+tag: lbug-switch/v1.2.3-mmd-style      (mmd 样式 fix, 锚 16fef216 — 见 §25.9)
+tag: lbug-switch/v1.2-final         ⭐ (sprint 最终闭环 HEAD, 含所有代码+文档+样式)
 ```
 
-### 25.8 文档同步索引
+### 25.9 ⭐ 最终 tag: `lbug-switch/v1.2-final`
+
+**远端 push 完成**: `origin lbug-switch/v1.2-final → b18a328e (HEAD)`
+
+```
+覆盖 commit 范围: d89d2c76 (v1.0.0 起) … b18a328e (v1.2-final)
+sprint 时间跨度: 2026-04-30 ~ 2026-05-01
+
+包含全部 v1.2 sprint 真闭环产物:
+- B1 path 归一化保留 camelCase ✅
+- B2 Go path-only anchor cypher-go-path-only tier ✅
+- B3 manifest 扩 46 条 csesapi 双向 ✅
+- bonus S5 Test_<methodName>.java fix ✅
+- 双向真业务 grpc demo (cses /Demo/triggerLoadIncrement ↔ mm /api/cses/health/csesCrossRepoDemo) ✅
+- 双向真发 6 LIVE MR (cses !45/!47/!48 + mm !9/!10/!11) ✅
+- 主航道 7 阶段闭环全保留 (不新增 stage / OrchestratorDeps 0 改动 / K8s ns 守门 / R-12+R-14 全开)
+- 4 张细粒度 mmd (16/19/20/21) 样式简洁化 + 17.lbug-diff.mmd 升级
+- session.md §25 + 路线图 v2.1 §12 + observe-patrol.md §6.4.1 §6.4.2
+
+仍 backlog (next sprint v1.3 候选):
+- B4 mattermost BaseRoutes chain extractor (用 manifest 兜底中)
+- B5 撤 lichao176 fork override (等上游 ladybugdb 0.16.1)
+- R-14 LLM determinism / OTel error 上报 / OTel method-level span
+```
+
+### 25.10 文档同步索引
 
 - `session.md §25` (本节) — sprint 闭环
 - `docs/learn/Agentic-DevOps-企业版路线图-v2.1.md §12` — v1.2 状态更新
