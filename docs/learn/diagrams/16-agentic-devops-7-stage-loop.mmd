@@ -1,56 +1,48 @@
-%% Agentic DevOps 7 阶段闭环 —— 团队自建版 GitNexus 企业版
-%% 配套文档：docs/learn/Agentic-DevOps-企业版路线图-v2.1.md §11 (v1.1) + §12 (v1.2)
-%% 细粒度视图: 19 单仓 / 20 跨仓 / 21 全局视野
-%%
-%% lbug-switch v1.1 + v1.2 真 LIVE 标记 (2026-04-30 ~ 05-01):
-%%   ⭐ = 真主流标准链路真生效 (matchType=manifest, conf=1.00)
-%%   🚀 = LIVE 三因子真发 MR 真证据 (双向 6 个 MR 集齐)
-%%   ✅ = v1.2 backlog 已落地 (B1+B2+B3+B5_PARSE)
-%%   🟡 = v1.2 backlog 仍待修 (B4 mattermost BaseRoutes chain)
+%% Agentic DevOps 7 阶段闭环 — 团队自建版 GitNexus 企业版
+%% 配套：路线图 v2.1 §11+§12 / session §24+§25
+%% 细粒度：19 单仓 / 20 跨仓 / 21 全局视野
 
 flowchart TB
-    OBS["🔍 1.观测<br/>/observe + Jaeger + Prom ✅<br/>真自取 traceUrl (mattermost !10 真 Jaeger 56c8b)"]:::existing
-    ISSUE[/"📋 GitHub/GitLab/Gitee Issue<br/>traceId + service + 路径"/]:::external
-    PRE["⚙️ pre · P1 Auto-reindex Webhook<br/>校验 last commit vs 索引快照 ✅<br/>(stage-1: HMAC + dedup 复用)"]:::existing
-    S2["🎯 2.锚点 · Phase 0 Trace2Code Resolver<br/>Jaeger/OTel 双格式 + 5 层 fallback + stacktrace ✅<br/>✅ v1.2 B1: path 归一化保留 camelCase (落地)<br/>✅ v1.2 B2: Go path-only anchor cypher-go-path-only (落地)<br/>✅ v1.2 B5_PARSE: parseMethodId 适配 #N suffix (test-gen 修)<br/>📌 lesson: path 末段 = method 名 让 S2 命中真 handler"]:::lbugswitch
-    S3["💥 3.爆炸 · GitNexus blast radius ✅<br/>api_blast_radius depth=2 crossDepth=1<br/>⭐ lbug-switch v1.1: 主路径 lookupStandardCrossLink<br/>(bridge.lbug ContractLink, manifest, conf=1.00)<br/>🔻 fallback DIY mcp-bridge.crossBlastRadius (conf=0.4-0.7)<br/>✅ v1.2 B3: manifest 扩到 46 条 cses-mm 双向 csesapi (落地)<br/>🟡 v1.2 B4: mattermost BaseRoutes chain extractor (待修, 用 manifest 兜底)"]:::lbugswitch
-    S4["🔬 4.溯源 · P5 Auto Regression Forensics<br/>git log ∩ blast radius ✅"]:::existing
-    S5["🧪 5.生成 · P4 E2E Test Generator ✅<br/>R-1 scaffold (advisory) + R-14.6 LLM 真断言 双轨<br/>🚀 cses !45: 真 JUnit 5 + StubMock + assertThrows ($0.91)<br/>✅ v1.2 fix: Test_unknown.java → Test_<methodName>.java<br/>(parseMethodId #N suffix 适配)"]:::live
-    S6["🚀 6.执行 · K8s Preview Env Spinner<br/>注入候选 + 跑 test ✅<br/>(stage-6: PreviewJobManager + ns 前缀守门 + R-3 异步)<br/>fake-S6 demo (testCommand 包夹 fake JUnit, gitnexus-preview-*)"]:::existing
-    S7["📤 7.回写 · Auto-PR/MR Creator ✅<br/>R-12 policy + LIVE 三因子<br/>⭐ put-files PUT-400-fallback-POST (lbug-switch v1.1.0)<br/>🚀 v1.1 真 MR: cses !45 + mattermost !9 + !10<br/>🚀 v1.2 真 MR 双向集齐: cses !47 + !48 + mm !11<br/>(双向跨仓真业务 demo /Demo/triggerLoadIncrement ↔ /api/cses/health/csesCrossRepoDemo)"]:::live
-    LOOP[/"开发者 review/merge → ship<br/>→ 新一轮 /observe 验证"/]:::external
+    OBS[🔍 1.观测<br/>/observe + Jaeger + Prom<br/>真自取 traceUrl]
+    ISSUE[/📋 GitLab Issue<br/>traceId + repo + path/]
+    PRE[⚙️ pre · Auto-reindex Webhook<br/>HMAC + dedup + 索引保鲜]
+    S2[🎯 2.锚点 · Trace2Code<br/>v1.2 B1 path 保留 camelCase ✅<br/>v1.2 B2 cypher-go-path-only ✅<br/>lesson: path 末段 = method 名]
+    S3[💥 3.爆炸 · blast radius<br/>主路径 lookupStandardCrossLink ⭐<br/>manifest conf=1.00<br/>v1.2 B3 manifest 46 条 ✅]
+    S4[🔬 4.溯源 · git log ∩ blast<br/>嫌疑 commit Top 3]
+    S5[🧪 5.生成 · Test Generator<br/>R-1 scaffold + R-14.6 LLM<br/>v1.2 fix Test_methodName.java ✅]
+    S6[🚀 6.执行 · K8s Preview<br/>ns gitnexus-preview-* 守门]
+    S7[📤 7.回写 · Auto-PR/MR<br/>LIVE 三因子 + R-12 policy<br/>v1.0~v1.2 双向 6 LIVE MR<br/>cses !45/!47/!48 + mm !9/!10/!11]
+    LOOP[/开发者 review/merge<br/>新一轮 /observe 验证/]
 
-    ORCH["🎼 Pipeline Orchestrator + Comment Policy ✅<br/>串联 1→7 + 失败回退 + 评论分发<br/>(pipeline/v0.3.0 真闭环)<br/>⭐ wiring 主路径 standard, fallback DIY (lbug-switch v1.1)"]:::lbugswitch
-    WIKI["📚 P3 Auto Wiki<br/>(side-effect)"]:::side
-    P2["🔗 P2 Multi-hop crossDepth>1<br/>(并行：Stage 3 增强)"]:::parallel
-    P6["🐫 P6 OCaml LanguageProvider<br/>(并行：语言扩展)"]:::parallel
+    ORCH[🎼 Pipeline Orchestrator<br/>串 S2→S7 + 失败兜底<br/>standard wiring v1.1]
+    P2[🔗 P2 multi-hop crossDepth>1]
+    P6[🐫 P6 OCaml LanguageProvider]
+    B4[🟡 v1.2 B4 mattermost<br/>BaseRoutes chain extractor<br/>backlog]
 
-    OBS -->|发现 error / 慢响应| ISSUE
-    ISSUE -->|webhook issues.opened ✅| PRE
-    PRE -->|图最新 → ORCH 自动调 run_pipeline ✅| S2
+    OBS -->|发现 error/慢| ISSUE
+    ISSUE -->|webhook issue.open| PRE
+    PRE -->|图最新| S2
     S2 -->|symbol UID| S3
     S3 -->|blast radius| S4
-    S4 -->|嫌疑提交 Top 3| S5
-    S5 -->|test files| S6
-    S6 -->|验证报告| S7
+    S4 -->|嫌疑提交| S5
+    S5 -->|patch + test| S6
+    S6 -->|junit pass| S7
     S7 --> LOOP
-    LOOP -.->|闭环| OBS
+    LOOP -.闭环.-> OBS
 
-    ORCH -.->|issue.opened 自动调 run_pipeline| PRE
-    ORCH -.->|管控| S2
-    ORCH -.->|管控| S4
-    ORCH -.->|管控| S5
-    ORCH -.->|管控| S6
-    ORCH -.->|管控| S7
+    ORCH -.管控.-> S2
+    ORCH -.管控.-> S3
+    ORCH -.管控.-> S5
+    ORCH -.管控.-> S6
+    ORCH -.管控.-> S7
+    P2 -.增强.-> S3
+    B4 -.待修.-> S3
 
-    PRE -.->|push 事件触发| WIKI
-    P2 -.->|多跳能力| S3
-
-    classDef existing fill:#d4f4dd,stroke:#2d6a4f,color:#000,stroke-width:2px
-    classDef new fill:#fff3cd,stroke:#856404,color:#000,stroke-width:2px
-    classDef cross fill:#cfe2ff,stroke:#0a4d8c,color:#000,stroke-width:2px
-    classDef side fill:#fcefee,stroke:#a04040,color:#000,stroke-width:1px
-    classDef parallel fill:#eaeaea,stroke:#666,color:#000,stroke-width:1px,stroke-dasharray: 3 3
-    classDef external fill:#fff,stroke:#888,color:#000,stroke-width:1px
-    classDef lbugswitch fill:#b3e5fc,stroke:#01579b,color:#000,stroke-width:3px
-    classDef live fill:#c8e6c9,stroke:#1b5e20,color:#000,stroke-width:3px
+    style S2 fill:#b3e5fc,stroke:#01579b,stroke-width:3px
+    style S3 fill:#b3e5fc,stroke:#01579b,stroke-width:3px
+    style S5 fill:#c8e6c9,stroke:#1b5e20,stroke-width:3px
+    style S7 fill:#c8e6c9,stroke:#1b5e20,stroke-width:3px
+    style ORCH fill:#b3e5fc,stroke:#01579b,stroke-width:3px
+    style B4 fill:#ffe0b2,stroke:#e65100,stroke-dasharray: 4 2
+    style P2 fill:#eaeaea,stroke:#666,stroke-dasharray: 3 3
+    style P6 fill:#eaeaea,stroke:#666,stroke-dasharray: 3 3

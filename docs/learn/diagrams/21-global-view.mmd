@@ -1,150 +1,123 @@
-%% Agentic DevOps · 全局视野 (global ecosystem)
-%% v1.2 sprint (2026-05-01) — 整个 Agentic DevOps 闭环的最高视角
-%% 配套文档：session.md §25 / 路线图 v2.1 §12
-%%
-%% 这是从用户业务请求 (curl/Tauri/etc) → 真 trace → 真 issue → 真 MR 的完整生态视图
-%% 涵盖：用户终端 / 业务双仓 / 可观测性 / GitNexus 索引 / Group bridge / Webhook /
-%%      Pipeline / LLM / K8s preview / GitLab / 三方 LIVE 闸门 / 6 个真 MR
-%%
-%% 跟 16.mmd (7 阶段闭环) + 19.mmd (单仓) + 20.mmd (跨仓) 一起组成 4 层视角:
-%%   16: 业务流程 (S1-S7 阶段视角)
-%%   19: 单仓视图 (一条 trace 在本仓的完整旅程)
-%%   20: 跨仓视图 (cses ↔ mattermost 双向 contract resolution)
-%%   21: 全局视野 (整个生态参与者的物理拓扑)
+%% Agentic DevOps 全局视野 — 整个生态拓扑
+%% v1.2 sprint 2026-05-01 / 双向 6 LIVE MR
+%% 配套：session §25 / 路线图 v2.1 §12 / 16+19+20 mmd
 
 flowchart TB
-    subgraph CLIENT["👤 终端 / 用户触发面"]
-        USER["开发者 / 测试 / 真用户<br/>(cookieId 真 session)"]:::actor
-        CURL["curl / Apifox / Tauri 客户端<br/>POST /Demo/triggerLoadIncrement<br/>POST /api/cses/health/csesCrossRepoDemo"]:::client
+    subgraph CLIENT["👤 终端触发"]
+        USER[开发者/真用户<br/>cookieId 真 session]
+        CURL[curl/Apifox/Tauri<br/>POST /Demo/triggerLoadIncrement<br/>POST /api/cses/health/csesCrossRepoDemo]
     end
 
-    subgraph BIZ["🏢 业务双仓 (本地代码 + 运行时)"]
-        CSES_BIZ["📘 cses-java<br/>localhost:3399<br/>Micronaut + paas grpc<br/>cookieId 鉴权 / @Controller<br/>+ MattermostClient grpc-client"]:::cses
-        MM_BIZ["📗 mattermost<br/>localhost:8065<br/>gorilla/mux + grpcx9<br/>BaseRoutes.X.Handle / grpc_client.go"]:::mm
-        CSES_BIZ <-->|grpc<br/>paas backend cses-grpc| MM_BIZ
+    subgraph BIZ["🏢 业务双仓"]
+        CSES_BIZ[cses-java :3399<br/>Micronaut + paas grpc]
+        MM_BIZ[mattermost :8065<br/>gorilla/mux + grpcx9]
     end
 
-    subgraph OBS["🔭 可观测性面"]
-        OTEL["OpenTelemetry SDK<br/>HTTP server + grpc client/server<br/>(method-level 不抽, 需 @WithSpan)"]:::otel
-        JAEGER["📡 Jaeger Query<br/>http://192.168.6.66:32281<br/>真 trace 储存"]:::jaeger
-        PROM["📊 Prometheus<br/>http://192.168.6.66:30090<br/>spanmetrics SLO 告警"]:::prom
-        OBSERVE_SKILL["🔍 /observe skill (TraceWeaver)<br/>scripts/observe-patrol.md<br/>巡检 → 建 issue (含 gitnexus:trace 块)"]:::skill
+    subgraph OBS["🔭 可观测性"]
+        OTEL[OpenTelemetry SDK<br/>HTTP+grpc 入出]
+        JAEGER[Jaeger Query<br/>192.168.6.66:32281]
+        PROM[Prometheus<br/>192.168.6.66:30090]
+        OBSERVE[/observe skill<br/>巡检 → 建 issue]
     end
 
-    subgraph GITLAB["🦊 GitLab (git.yundiz.com)"]
-        REPO_CSES["cses/java/cses/cses<br/>(project_id=123)"]:::gitlab
-        REPO_MM["cses/go/mattermost<br/>(project_id=22)"]:::gitlab
-        ISSUES["📋 Issues<br/>auto-detected + gitnexus:auto-pr-live"]:::gitlab
-        MRS["📤 MRs (6 真发):<br/>cses !45 / !47 / !48<br/>mm !9 / !10 / !11"]:::live
-        WEBHOOK_OUT["GitLab webhook<br/>issue.open/reopen<br/>X-Gitlab-Token verify"]:::gitlab
+    subgraph GITLAB["🦊 GitLab git.yundiz.com"]
+        REPO_GL[cses + mattermost project]
+        ISSUES[Issues<br/>auto-detected + LIVE label]
+        MRS[🚀 双向 6 LIVE MR<br/>cses !45/!47/!48<br/>mm !9/!10/!11]
+        WH_OUT[GitLab webhook<br/>X-Gitlab-Token]
     end
 
-    subgraph GNX["🧠 GitNexus 索引底座 (1.6.2 本地开发版)"]
-        EVAL["🔥 gitnexus eval-server<br/>localhost:4848<br/>tool/cypher + tool/context + tool/impact<br/>读各仓 .gitnexus/lbug"]:::gnx
-        REPO_INDEX_CSES["~/.gitnexus/repos/cses/lbug<br/>107k symbols / 287k edges"]:::index
-        REPO_INDEX_MM["~/.gitnexus/repos/mattermost/lbug<br/>160k symbols / 336k edges"]:::index
-        BRIDGE["~/.gitnexus/groups/cses-mm/<br/>bridge.lbug<br/>1275 contracts / 54 ContractLink<br/>(B3 manifest 扩 + B1+B2 case 保留)"]:::bridge
+    subgraph GNX["🧠 GitNexus 1.6.2 索引底座"]
+        EVAL[gitnexus eval-server :4848<br/>tool/cypher tool/context tool/impact]
+        IDX_CSES[(repos/cses/lbug<br/>107k symbols)]
+        IDX_MM[(repos/mm/lbug<br/>160k symbols)]
+        BRIDGE_DB[(groups/cses-mm/bridge.lbug<br/>1275 contracts / 54 ContractLink)]
     end
 
-    subgraph WEBHOOK["⚙️ webhook server (本地 PID 60380)"]
-        WS["scripts/start-webhook-server.ts<br/>localhost:3034<br/>env: GITLAB_SECRET / AUTOPR_LIVE / TOKEN_MAP /<br/>BRIDGE_REPO_MAP / CROSS_REPO_PARTNERS"]:::webhook
-        ORCH["🎼 Pipeline Orchestrator<br/>core/pipeline/orchestrator.ts<br/>串 S2-S7 + LIVE 三因子守门"]:::orch
+    subgraph WEBHOOK["⚙️ webhook server localhost:3034"]
+        WS[start-webhook-server.ts<br/>SECRET + AUTOPR_LIVE + TOKEN_MAP]
+        ORCH[🎼 Pipeline Orchestrator<br/>S2~S7 串联]
     end
 
-    subgraph LLM["🤖 LLM patch 真接 (R-14)"]
-        CLAUDE_CLI["claude -p (本机)<br/>budget=$5, max-concurrent=1<br/>R-14 systemPrompt 隔离<br/>R-14 violatesSafetyPolicy 二次门"]:::llm
-        DECISION{"trace 有 error<br/>+ stacktrace?"}
-        PATCH["✅ 真 patch + assertThrows<br/>(#65: transferTo guard $1.42)"]:::live
-        ABORT["⚠️ abort + 诊断报告<br/>(#68/#29: trace 信号薄)"]:::warn
+    subgraph LLM["🤖 LLM patch R-14"]
+        CLAUDE[claude -p 本机<br/>budget=$5]
+        DEC{trace 有<br/>error+stacktrace?}
+        PATCH[真 patch+assertThrows]
+        ABORT[abort+诊断报告]
     end
 
-    subgraph K8S["☸️ K8s preview env (S6)"]
-        K8S_NS["ns: gitnexus-preview-*<br/>(强制守门 assertNsAllowed)"]:::k8s
-        TEST_RUN["fake JUnit XML demo<br/>or 真 image + 真 smoke test"]:::k8s
+    subgraph K8S["☸️ K8s Preview S6"]
+        K8S_NS[ns gitnexus-preview-* 强制]
+        TEST_RUN[junit XML pass/fail]
     end
 
-    subgraph BACKLOG["📋 v1.2 sprint backlog (已落地)"]
-        B1["✅ B1 path 归一化保留 camelCase<br/>(http-route-extractor.ts)"]:::backlog_done
-        B2["✅ B2 Go path-only anchor<br/>(mcp-bridge.ts cypher-go-path-only)"]:::backlog_done
-        B3["✅ B3 manifest 扩 80+ csesapi<br/>(cses-mm group.yaml 46 条 + bootstrap)"]:::backlog_done
-        B4["🟡 B4 mattermost BaseRoutes chain extractor<br/>(go.ts 暂不识别 → manifest 兜底)"]:::backlog_pending
-        B5_PARSE["✅ S5 fix: parseMethodId #N suffix<br/>Test_unknown.java → Test_<methodName>.java"]:::backlog_done
+    subgraph BACKLOG["📋 v1.2 backlog"]
+        B1[B1 path camelCase ✅]
+        B2[B2 Go path-only anchor ✅]
+        B3[B3 manifest 扩 ✅]
+        B5_FIX[Test_methodName.java fix ✅]
+        B4[B4 BaseRoutes chain extractor 🟡]
     end
 
     %% 用户 → 业务
     USER --> CURL
     CURL --> CSES_BIZ
     CURL --> MM_BIZ
+    CSES_BIZ <-. grpc paas .-> MM_BIZ
 
     %% 业务 → 可观测
-    CSES_BIZ -.OTel SDK.-> OTEL
-    MM_BIZ -.OTel SDK.-> OTEL
+    CSES_BIZ -.OTel.-> OTEL
+    MM_BIZ -.OTel.-> OTEL
     OTEL --> JAEGER
     CSES_BIZ -.metrics.-> PROM
     MM_BIZ -.metrics.-> PROM
 
-    %% 巡检
-    JAEGER --> OBSERVE_SKILL
-    PROM --> OBSERVE_SKILL
-    OBSERVE_SKILL -->|创建 issue + gitnexus:trace 块| ISSUES
-
-    %% GitLab webhook → orchestrator
-    ISSUES --> WEBHOOK_OUT
-    WEBHOOK_OUT --> WS
+    %% 巡检 → issue
+    JAEGER --> OBSERVE
+    PROM --> OBSERVE
+    OBSERVE -->|gitnexus:trace 块| ISSUES
+    ISSUES --> WH_OUT
+    WH_OUT --> WS
     WS --> ORCH
 
     %% Orchestrator 调底座
     ORCH -.调.-> EVAL
-    EVAL -.读.-> REPO_INDEX_CSES
-    EVAL -.读.-> REPO_INDEX_MM
-    ORCH -.standard cross-link.-> BRIDGE
+    EVAL -.读.-> IDX_CSES
+    EVAL -.读.-> IDX_MM
+    ORCH -.standard cross-link.-> BRIDGE_DB
 
     %% Orchestrator 调 LLM
-    ORCH --> DECISION
-    DECISION -->|有| CLAUDE_CLI
-    DECISION -->|无| ABORT
-    CLAUDE_CLI --> PATCH
-    CLAUDE_CLI --> ABORT
+    ORCH --> DEC
+    DEC -->|有| CLAUDE
+    DEC -->|无| ABORT
+    CLAUDE --> PATCH
+    CLAUDE --> ABORT
 
-    %% S6 K8s preview
+    %% S6 + S7
     PATCH --> K8S_NS
     ABORT --> K8S_NS
     K8S_NS --> TEST_RUN
-
-    %% S7 真发 MR
     TEST_RUN -->|LIVE 三因子全过| MRS
     TEST_RUN -.dryRun.-> ISSUES
 
-    %% 业务源代码 → 索引建立
-    CSES_BIZ -.gitnexus analyze.-> REPO_INDEX_CSES
-    MM_BIZ -.gitnexus analyze.-> REPO_INDEX_MM
-    REPO_INDEX_CSES -.bootstrap-cses-mm-group.-> BRIDGE
-    REPO_INDEX_MM -.bootstrap-cses-mm-group.-> BRIDGE
+    %% 业务源 → 索引建立
+    CSES_BIZ -.gitnexus analyze.-> IDX_CSES
+    MM_BIZ -.gitnexus analyze.-> IDX_MM
+    IDX_CSES -.bootstrap.-> BRIDGE_DB
+    IDX_MM -.bootstrap.-> BRIDGE_DB
 
-    %% backlog 锚到对应组件
-    B1 -.改.-> WS
-    B2 -.改.-> EVAL
-    B3 -.改.-> BRIDGE
-    B4 -.待修.-> EVAL
-    B5_PARSE -.改.-> EVAL
-
-    classDef actor fill:#fff,stroke:#666,stroke-width:1px
-    classDef client fill:#fce4ec,stroke:#880e4f,color:#000
-    classDef cses fill:#cfe2ff,stroke:#0a4d8c,color:#000,stroke-width:2px
-    classDef mm fill:#d4edda,stroke:#155724,color:#000,stroke-width:2px
-    classDef otel fill:#fff8dc,stroke:#b8860b,color:#000
-    classDef jaeger fill:#ffe0b2,stroke:#e65100,color:#000,stroke-width:2px
-    classDef prom fill:#ffe0b2,stroke:#e65100,color:#000
-    classDef skill fill:#b3e5fc,stroke:#01579b,color:#000,stroke-width:2px
-    classDef gitlab fill:#fff,stroke:#fc6d26,color:#000,stroke-width:2px
-    classDef live fill:#a5d6a7,stroke:#1b5e20,color:#000,stroke-width:4px
-    classDef gnx fill:#e1bee7,stroke:#4a148c,color:#000,stroke-width:2px
-    classDef index fill:#f3e5f5,stroke:#6a1b9a,color:#000
-    classDef bridge fill:#e1bee7,stroke:#4a148c,color:#000,stroke-width:3px
-    classDef webhook fill:#b3e5fc,stroke:#01579b,color:#000,stroke-width:2px
-    classDef orch fill:#b3e5fc,stroke:#01579b,color:#000,stroke-width:3px
-    classDef llm fill:#fff3cd,stroke:#856404,color:#000,stroke-width:2px
-    classDef warn fill:#ffe0b2,stroke:#e65100,color:#000
-    classDef k8s fill:#d1ecf1,stroke:#0c5460,color:#000
-    classDef backlog_done fill:#c8e6c9,stroke:#1b5e20,color:#000,stroke-width:2px
-    classDef backlog_pending fill:#ffe0b2,stroke:#e65100,color:#000,stroke-width:2px,stroke-dasharray: 4 2
+    style CSES_BIZ fill:#cfe2ff,stroke:#0a4d8c
+    style MM_BIZ fill:#d4edda,stroke:#155724
+    style JAEGER fill:#ffe0b2,stroke:#e65100
+    style OBSERVE fill:#b3e5fc,stroke:#01579b
+    style MRS fill:#a5d6a7,stroke:#1b5e20,stroke-width:3px
+    style EVAL fill:#e1bee7,stroke:#4a148c
+    style BRIDGE_DB fill:#e1bee7,stroke:#4a148c,stroke-width:3px
+    style ORCH fill:#b3e5fc,stroke:#01579b,stroke-width:3px
+    style PATCH fill:#c8e6c9,stroke:#1b5e20
+    style ABORT fill:#ffe0b2,stroke:#e65100
+    style B4 fill:#ffe0b2,stroke:#e65100,stroke-dasharray: 4 2
+    style B1 fill:#c8e6c9,stroke:#1b5e20
+    style B2 fill:#c8e6c9,stroke:#1b5e20
+    style B3 fill:#c8e6c9,stroke:#1b5e20
+    style B5_FIX fill:#c8e6c9,stroke:#1b5e20

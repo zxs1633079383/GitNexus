@@ -1,82 +1,64 @@
-%% Agentic DevOps · 跨仓爆炸半径 (cross-repo blast, cses ↔ mattermost)
-%% v1.2 sprint (2026-05-01) — 双向真业务 grpc 通信 + standard cross-link 主路径
-%% 配套文档：session.md §25 / 路线图 v2.1 §12 / lbug-切换-环境清单 §6
-%%
-%% 真 evidence (双向 6 个 LIVE MR 集齐):
-%%   cses → mm:  MR !45 (#61) + !47 (#65) + !48 (#68)
-%%   mm  → cses: MR !9 (#25) + !10 (#26) + !11 (#29)
-%%
-%% 关键不变量:
-%%   - 不动 GitNexus 一行代码 (lbug-switch v1.1+v1.2 全部不动 GitNexus 业务源)
-%%   - 利用 manifest extractor (B3) + path末段=method名 (B1+B2 lesson) 让 contract 自动浮现
-%%   - bridge.lbug ContractLink 双向 conf=1.0 (manifest+exact 双 link)
+%% 跨仓爆炸半径 — cses ↔ mattermost 双向 contract resolution
+%% v1.2 sprint 2026-05-01 / 双向 6 LIVE MR
+%% 配套：session §25 / 路线图 v2.1 §12
 
 flowchart LR
-    subgraph CSES["📘 cses-java 仓 (Micronaut + paas grpc)"]
-        CSES_CTRL["@Controller(/Demo)<br/>CrossRepoDemoController.<br/>triggerLoadIncrement#2"]:::cses
-        CSES_SVC["CrossRepoDemoService.<br/>executeLoadIncrementChain<br/>(4 段 helper method 加厚 trace)"]:::cses
-        CSES_CLIENT["@GrpcClient<br/>MattermostClient.<br/>loadIncrementByChannelId"]:::cses
-        CSES_COMP["@Controller(/Company)<br/>CompanyController.<br/>readMember#95<br/>readDeptPositions#70<br/>readOrganizes#60"]:::cses
+    subgraph CSES["📘 cses-java 仓"]
+        CSES_CTRL[Controller /Demo<br/>triggerLoadIncrement]
+        CSES_SVC[CrossRepoDemoService<br/>4 段 helper]
+        CSES_CLIENT[MattermostClient @GrpcClient<br/>loadIncrementByChannelId]
+        CSES_COMP[CompanyController /Company<br/>readMember/readDeptPositions/readOrganizes]
     end
 
-    subgraph MM["📗 mattermost 仓 (gorilla/mux + grpcx9)"]
-        MM_HANDLER["BaseRoutes.Health.Handle<br/>/api/cses/health/csesCrossRepoDemo<br/>(path 末段=Function 名)"]:::mm
-        MM_DEMO["csesCrossRepoDemo (Function)<br/>↓<br/>executeCrossRepoDemoChain<br/>(6 段 helper, 加厚 trace)"]:::mm
-        MM_GRPC_CLIENT["app.ReadMember (package-level)<br/>app.ReadDeptPositions<br/>app.ReadOrganizes<br/>↓ GrpcInvoke(uri, CsesGrpc, ctx)"]:::mm
-        MM_HANDLE_INC["BaseRoutes.Channel.Handle<br/>/api/cses/channel/load/<br/>incrementByChannelId<br/>(loadSingleIncrementChannel)"]:::mm
+    subgraph MM["📗 mattermost 仓"]
+        MM_HANDLER[BaseRoutes.Health.Handle<br/>csesCrossRepoDemo]
+        MM_DEMO[executeCrossRepoDemoChain<br/>6 段 helper]
+        MM_GRPC[app.ReadMember/ReadDept/ReadOrganizes<br/>package-level]
+        MM_INC[BaseRoutes.Channel.Handle<br/>loadSingleIncrementChannel]
     end
 
-    subgraph Bridge["🌉 bridge.lbug — cses-mm group standard cross-link"]
-        BRIDGE_DB["~/.gitnexus/groups/cses-mm/bridge.lbug<br/>1275 contracts / 54 ContractLink"]:::bridge
-        MANIFEST_C2M["manifest cses→mm (44 条):<br/>incrementByChannelId / posts/createPosts /<br/>channel/create / channels/load/increment ..."]:::bridge
-        MANIFEST_M2C["manifest mm→cses (10 条):<br/>readIdNameListByUserIds / readMember /<br/>readDeptPositions / readOrganizes ..."]:::bridge
-        EXACT_LINK["exact, conf=1.0:<br/>auto-extracted by java.ts Micronaut plugin<br/>(cses CompanyController + mm csesapi 真 endpoint)"]:::bridge
+    subgraph BRIDGE_GROUP["🌉 ~/.gitnexus/groups/cses-mm/bridge.lbug"]
+        BRIDGE[(54 ContractLink<br/>1275 Contracts)]
+        M2M_C2M[manifest cses→mm<br/>44 条 csesapi]
+        M2M_M2C[manifest mm→cses<br/>10 条 /Company/*]
+        EXACT[exact auto-extract<br/>java.ts Micronaut 抽 cses provider]
     end
 
-    subgraph S3_CY["💥 S3 · standard-cross-link 主路径"]
-        CYPHER["MATCH (consumer:Contract)-[l:ContractLink]->(provider:Contract)<br/>WHERE consumer.repo=$primaryRepo<br/>  AND consumer.contractId=$cidEscaped<br/>  AND consumer.role='consumer'<br/>RETURN provider.repo, provider.symbolUid, l.matchType, l.confidence"]:::cypher
-        S3_HIT["✅ partner 真命中<br/>matchType=manifest+exact, conf=1.00"]:::live
+    subgraph S3_CY["💥 S3 standard-cross-link 主路径"]
+        CYPHER[MATCH consumer-l-provider Contract<br/>WHERE consumer.repo+contractId+role<br/>RETURN partner.repo + matchType + conf]
+        HIT[manifest+exact conf=1.00<br/>双向都命中]
     end
 
-    subgraph Pipeline["🎼 Pipeline Orchestrator (跨仓视角)"]
-        TRACE_CSES["真 trace cses → mm:<br/>5436e186 (xpa-12 service)<br/>POST /Demo/triggerLoadIncrement<br/>+ grpc.GrpcAgentService/invoke"]:::trace
-        TRACE_MM["真 trace mm → cses:<br/>5ce5b517 (mattermost service)<br/>POST /api/cses/health/csesCrossRepoDemo"]:::trace
-        S2_HIT["S2 真命中 (path末段=method名 lesson):<br/>cses: triggerLoadIncrement<br/>mm: csesCrossRepoDemo"]:::hit
-        MR_BIDIR["✅ 双向真发 MR<br/>cses: !45 / !47 / !48<br/>mm:  !9 / !10 / !11"]:::live
-    end
+    LIVE_MR[🚀 双向 6 LIVE MR<br/>cses !45 !47 !48<br/>mm  !9 !10 !11]
 
     %% cses → mm 调用链
     CSES_CTRL --> CSES_SVC
     CSES_SVC --> CSES_CLIENT
-    CSES_CLIENT -.HTTP/grpc 跨仓.-> MM_HANDLE_INC
+    CSES_CLIENT -. grpc 跨仓 .-> MM_INC
 
     %% mm → cses 调用链
     MM_HANDLER --> MM_DEMO
-    MM_DEMO --> MM_GRPC_CLIENT
-    MM_GRPC_CLIENT -.grpc/HTTP 跨仓.-> CSES_COMP
+    MM_DEMO --> MM_GRPC
+    MM_GRPC -. grpc 跨仓 .-> CSES_COMP
 
-    %% 索引层
-    CSES_CLIENT -.java.ts<br/>抽 consumer Contract.-> MANIFEST_C2M
-    CSES_COMP -.java.ts Micronaut<br/>抽 provider Contract.-> EXACT_LINK
-    MM_GRPC_CLIENT -.manifest 显式声明.-> MANIFEST_M2C
-    MM_HANDLE_INC -.go.ts BaseRoutes 不识别<br/>(B4 backlog) → manifest 兜底.-> MANIFEST_C2M
+    %% 索引/manifest
+    CSES_CLIENT -. java.ts 抽 consumer .-> M2M_C2M
+    CSES_COMP -. java.ts 抽 provider .-> EXACT
+    MM_GRPC -. manifest 显式 .-> M2M_M2C
+    MM_INC -. go.ts 不识别<br/>manifest 兜底 .-> M2M_C2M
 
-    MANIFEST_C2M --> BRIDGE_DB
-    MANIFEST_M2C --> BRIDGE_DB
-    EXACT_LINK --> BRIDGE_DB
+    M2M_C2M --> BRIDGE
+    M2M_M2C --> BRIDGE
+    EXACT --> BRIDGE
 
     %% Pipeline 跑流程
-    TRACE_CSES --> S2_HIT
-    TRACE_MM --> S2_HIT
-    S2_HIT --> CYPHER
-    CYPHER -.读.-> BRIDGE_DB
-    CYPHER --> S3_HIT
-    S3_HIT --> MR_BIDIR
+    CYPHER -.读.-> BRIDGE
+    CYPHER --> HIT
+    HIT --> LIVE_MR
 
-    classDef cses fill:#cfe2ff,stroke:#0a4d8c,color:#000,stroke-width:2px
-    classDef mm fill:#d4edda,stroke:#155724,color:#000,stroke-width:2px
-    classDef bridge fill:#e1bee7,stroke:#4a148c,color:#000,stroke-width:2px
-    classDef cypher fill:#fff3cd,stroke:#856404,color:#000,stroke-width:2px
-    classDef trace fill:#fff8dc,stroke:#b8860b,color:#000,stroke-width:2px
-    classDef hit fill:#c8e6c9,stroke:#1b5e20,color:#000,stroke-width:3px
-    classDef live fill:#a5d6a7,stroke:#1b5e20,color:#000,stroke-width:4px
+    style CSES fill:#cfe2ff,stroke:#0a4d8c
+    style MM fill:#d4edda,stroke:#155724
+    style BRIDGE fill:#e1bee7,stroke:#4a148c
+    style HIT fill:#c8e6c9,stroke:#1b5e20,stroke-width:3px
+    style LIVE_MR fill:#a5d6a7,stroke:#1b5e20,stroke-width:3px
+    style CYPHER fill:#fff3cd,stroke:#856404
