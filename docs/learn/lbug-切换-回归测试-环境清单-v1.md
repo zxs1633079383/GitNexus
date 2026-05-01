@@ -546,3 +546,43 @@ node -e "const lbug=require('@ladybugdb/core'); ... // 烟测"
 | 日期 | 版本 | 变更 |
 |---|---|---|
 | 2026-04-30 | v1.0 | 首发, 5 段 15 步 + 8 条回归判据, 配套 v2.1 §10 切回主流候选 |
+
+---
+
+## 5.3 v1.1 增量 — mattermost partner MR 真发 (修 GitLab put-files API)
+
+**bug 发现**: LIVE 路 1 跑 mattermost issue #25, S7 `put-files` 失败:
+```
+putFile failed: 400 {"message":"A file with this name doesn't exist"}
+```
+
+**根因**: `auto-pr.ts:120` 默认 `op: f.op ?? 'update'` (PUT). LLM 输出的 fixFiles + testFiles 不带 op 字段, 默认 update → GitLab `repository/files/{path}` PUT 在文件不存在时返 400. LLM 出的新 testFile 通常是新文件, 应用 POST 创建.
+
+**修复**: `core/auto-pr/providers/gitlab.ts:88 putFile` 加 PUT-400-fallback-POST:
+```ts
+if (!r.ok && action === 'PUT' && r.status === 400) {
+  const errText = await r.text();
+  if (/doesn'?t exist|does not exist/i.test(errText)) {
+    r = await this.fetch(url, { method: 'POST', body: JSON.stringify(body) });
+  } else { throw ... }
+}
+```
+
+**真发证据 (mattermost #25 retry)**:
+| 项 | 值 |
+|---|---|
+| MR | !9 opened |
+| URL | http://git.yundiz.com/cses/go/mattermost/-/merge_requests/9 |
+| branch | auto-fix/issue-25 (commit bba5d82a) |
+| target | main |
+| changes_count | 1 |
+| new file | `.gitnexus/reports/auto-pr-issue-25.md` (new=True) ★ |
+| S7 stages | policy ok / branch ok / put-files ok / create-pr ok / labels ok |
+| LLM | abort cost=$0.46 (Go handler 这次 LLM 觉得不该改, 仍走 advisory 报告路径) |
+
+**验证 fallback 真走过**: changes_count=1 + new_file=True. 如果没修 fallback POST, 这个新文件 PUT 会 400 → 0 文件 0 MR.
+
+**双 MR 真发集齐** (lbug-switch/v1.1):
+- cses MR !45  (issue #61, LLM 真改 Java 代码, $0.91)
+- mattermost MR !9 (issue #25, LLM Go advisory, put-files fix 验证 ★)
+

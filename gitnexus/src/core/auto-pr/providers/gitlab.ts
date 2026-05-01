@@ -94,7 +94,21 @@ export class GitLabPRProvider implements PRProvider {
       content: opts.content,
       commit_message: opts.message,
     };
-    const r = await this.fetch(url, { method: action, body: JSON.stringify(body) });
+    let r = await this.fetch(url, { method: action, body: JSON.stringify(body) });
+
+    // lbug-switch/v1.1 fix: GitLab API quirk — PUT 文件不存在时返 400
+    // "A file with this name doesn't exist". LLM 出的 fixFiles + testFiles 默认
+    // op='update' (PUT, 见 auto-pr.ts:120), 但新生成的 testFile 通常是新文件,
+    // 自动 fallback POST 创建. 真发证据: mattermost issue #25 → MR 阻塞 → 修后通.
+    if (!r.ok && action === 'PUT' && r.status === 400) {
+      const errText = await r.text();
+      if (/doesn'?t exist|does not exist/i.test(errText)) {
+        r = await this.fetch(url, { method: 'POST', body: JSON.stringify(body) });
+      } else {
+        throw new Error(`putFile failed: ${r.status} ${errText}`);
+      }
+    }
+
     if (!r.ok && !(opts.op === 'delete' && r.status === 404)) {
       throw new Error(`putFile failed: ${r.status} ${await r.text()}`);
     }
