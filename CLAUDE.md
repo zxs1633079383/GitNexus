@@ -1,13 +1,18 @@
 <!-- version: 1.5.0 -->
 <!--
   Metadata: version, last reviewed, scope, model policy, reference docs, changelog.
-  Last updated: 2026-05-01 — lbug-switch v1.1 真状态同步 + v1.2 sprint backlog (B1+B2) 启动
+  Last updated: 2026-05-01 — lbug-switch v1.2 sprint 全部闭环 (final tag `lbug-switch/v1.2-final`)
 -->
 
 Last reviewed: 2026-05-01
 
 > **GitNexus runtime version: 1.6.2** (本地开发版 symlink, 全局 `npm ls -g gitnexus`)
-> **lbug-switch sprint**: v1.1 已收口 (commit `7963d67d`), 主路径 `lookupStandardCrossLink` (manifest, conf=1.00); v1.2 sprint 启动 (B1+B2 backlog, 见 §当前进度)
+> **lbug-switch sprint 状态**:
+>   - v1.0.0-LIVE (cses MR !45) → v1.1.0-LIVE (mm MR !9 + put-files fix) → v1.1.1-docs
+>   - v1.2.0-slow-skip (slow 分流) → v1.2.1-b1-path-camel (B1) → v1.2.2-docs → v1.2.0-LIVE (sprint LIVE)
+>   - **v1.2.3-mmd-style → `lbug-switch/v1.2-final` (sprint 最终闭环)** ⭐
+>
+> **真闭环 evidence**: 双向 6 LIVE MR (cses !45/!47/!48 + mm !9/!10/!11), B1+B2+B3+S5-fix 已落地, B4 用 manifest 兜底.
 
 ## ⚓ 主航道 — Agentic DevOps 7 阶段闭环 (绝对不偏离)
 
