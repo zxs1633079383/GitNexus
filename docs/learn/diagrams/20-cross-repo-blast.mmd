@@ -4,55 +4,55 @@
 
 flowchart LR
     subgraph CSES["📘 cses-java 仓"]
-        CSES_CTRL[Controller /Demo<br/>triggerLoadIncrement]
+        CSES_CTRL[CrossRepoDemoController<br/>triggerLoadIncrement]
         CSES_SVC[CrossRepoDemoService<br/>4 段 helper]
-        CSES_CLIENT[MattermostClient @GrpcClient<br/>loadIncrementByChannelId]
-        CSES_COMP[CompanyController /Company<br/>readMember/readDeptPositions/readOrganizes]
+        CSES_CLIENT[MattermostClient<br/>GrpcClient interface]
+        CSES_COMP[CompanyController<br/>readMember<br/>readDeptPositions<br/>readOrganizes]
     end
 
     subgraph MM["📗 mattermost 仓"]
-        MM_HANDLER[BaseRoutes.Health.Handle<br/>csesCrossRepoDemo]
+        MM_HANDLER[csesapi handler<br/>csesCrossRepoDemo]
         MM_DEMO[executeCrossRepoDemoChain<br/>6 段 helper]
-        MM_GRPC[app.ReadMember/ReadDept/ReadOrganizes<br/>package-level]
-        MM_INC[BaseRoutes.Channel.Handle<br/>loadSingleIncrementChannel]
+        MM_GRPC[app.ReadMember<br/>app.ReadDeptPositions<br/>app.ReadOrganizes]
+        MM_INC[csesapi handler<br/>loadSingleIncrementChannel]
     end
 
-    subgraph BRIDGE_GROUP["🌉 ~/.gitnexus/groups/cses-mm/bridge.lbug"]
+    subgraph BRIDGE_GROUP["🌉 cses-mm group bridge.lbug"]
         BRIDGE[(54 ContractLink<br/>1275 Contracts)]
-        M2M_C2M[manifest cses→mm<br/>44 条 csesapi]
-        M2M_M2C[manifest mm→cses<br/>10 条 /Company/*]
-        EXACT[exact auto-extract<br/>java.ts Micronaut 抽 cses provider]
+        M2M_C2M[manifest cses to mm<br/>44 条 csesapi]
+        M2M_M2C[manifest mm to cses<br/>10 条 Company]
+        EXACT[exact auto-extract<br/>java.ts Micronaut 抽]
     end
 
-    subgraph S3_CY["💥 S3 standard-cross-link 主路径"]
-        CYPHER[MATCH consumer-l-provider Contract<br/>WHERE consumer.repo+contractId+role<br/>RETURN partner.repo + matchType + conf]
-        HIT[manifest+exact conf=1.00<br/>双向都命中]
+    subgraph S3_CY["💥 S3 standard-cross-link"]
+        CYPHER[cypher MATCH consumer-l-provider<br/>WHERE repo+contractId+role<br/>RETURN partner+matchType+conf]
+        HIT[manifest plus exact conf=1.00<br/>双向都命中]
     end
 
-    LIVE_MR[🚀 双向 6 LIVE MR<br/>cses !45 !47 !48<br/>mm  !9 !10 !11]
+    LIVE_MR[🚀 双向 6 LIVE MR<br/>cses !45 !47 !48<br/>mm !9 !10 !11]
 
-    %% cses → mm 调用链
+    %% cses to mm 调用链
     CSES_CTRL --> CSES_SVC
     CSES_SVC --> CSES_CLIENT
-    CSES_CLIENT -. grpc 跨仓 .-> MM_INC
+    CSES_CLIENT -.->|"grpc 跨仓"| MM_INC
 
-    %% mm → cses 调用链
+    %% mm to cses 调用链
     MM_HANDLER --> MM_DEMO
     MM_DEMO --> MM_GRPC
-    MM_GRPC -. grpc 跨仓 .-> CSES_COMP
+    MM_GRPC -.->|"grpc 跨仓"| CSES_COMP
 
-    %% 索引/manifest
-    CSES_CLIENT -. java.ts 抽 consumer .-> M2M_C2M
-    CSES_COMP -. java.ts 抽 provider .-> EXACT
-    MM_GRPC -. manifest 显式 .-> M2M_M2C
-    MM_INC -. go.ts 不识别<br/>manifest 兜底 .-> M2M_C2M
+    %% 索引/manifest 抽取
+    CSES_CLIENT -.->|"java.ts 抽 consumer"| M2M_C2M
+    CSES_COMP -.->|"java.ts 抽 provider"| EXACT
+    MM_GRPC -.->|"manifest 显式声明"| M2M_M2C
+    MM_INC -.->|"go.ts 不识别 用 manifest 兜底"| M2M_C2M
 
     M2M_C2M --> BRIDGE
     M2M_M2C --> BRIDGE
     EXACT --> BRIDGE
 
     %% Pipeline 跑流程
-    CYPHER -.读.-> BRIDGE
+    CYPHER -.->|"读"| BRIDGE
     CYPHER --> HIT
     HIT --> LIVE_MR
 
