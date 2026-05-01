@@ -29,8 +29,10 @@ describe('jaeger-span-normalizer · 8 fixtures', () => {
 
     expect(out.kind).toBe('http');
     expect(out.method).toBe('POST');
+    // B1 (v1.2 sprint, 2026-05-01): normalizeConsumerPath case-preserved
+    // (was lowercase pre-B1).
     expect(out.contractId).toBe(
-      'http::POST::/taskmanage/task/member/readtaskmemberstate',
+      'http::POST::/taskManage/task/member/readTaskMemberState',
     );
     expect(out.hops).toEqual(['http.route']);
     expect(out.errorEvent).toBeDefined();
@@ -72,8 +74,9 @@ describe('jaeger-span-normalizer · 8 fixtures', () => {
     const out = normalizeJaegerSpan(span);
     expect(out.kind).toBe('http');
     expect(out.method).toBe('POST');
-    // 注意: normalizeConsumerPath 会 lowercase 整个 path
-    expect(out.contractId).toBe('http::POST::/collaborate/loadworkorientformember');
+    // B1 (v1.2 sprint, 2026-05-01): normalizeConsumerPath case-preserved
+    // (camelCase last segment retained for manifest match symmetry).
+    expect(out.contractId).toBe('http::POST::/Collaborate/loadWorkOrientForMember');
     expect(out.hops).toEqual(['url.path']);
   });
 

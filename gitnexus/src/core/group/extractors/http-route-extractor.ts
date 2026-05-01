@@ -54,12 +54,29 @@ ORDER BY sym.startLine`;
 /**
  * Canonicalize a provider-side HTTP path for contract-id generation:
  *   - strip query string
- *   - lower-case
  *   - drop trailing slash
  *   - collapse `:id`, `{id}`, `[id]` path params into a single `{param}`
+ *
+ * **Case-sensitive (B1, v1.2 sprint, 2026-05-01)**:
+ * Path segments preserve their original case. This aligns with
+ * `manifest-extractor.normalizeRoutePath` (which is explicitly
+ * case-preserving) and `core/ingestion/pipeline.ts` ensureSlash semantics.
+ *
+ * Why: real-world routes use camelCase last segments
+ * (e.g. `/api/cses/channel/load/incrementByChannelId`).
+ * Lowercasing collapsed `incrementByChannelId` → `incrementbychannelid`,
+ * which then failed to match the manifest-stored contractId
+ * (case-preserved per `manifest-extractor.ts:15`). Issue #62 / #27 / #64
+ * evidence — see `docs/learn/lbug-切换-回归测试-环境清单-v1.md §6.3 B1`.
+ *
+ * Symmetry: every callsite that matches paths goes through this same
+ * function (consumer side via `normalizeConsumerPath`, provider side via
+ * direct calls in this file). Both sides preserving case keeps matching
+ * symmetric — the only behavior change is that previously-equivalent
+ * lowercase variants now don't conflate.
  */
 export function normalizeHttpPath(p: string): string {
-  let s = p.trim().split('?')[0].toLowerCase().replace(/\/+$/, '');
+  let s = p.trim().split('?')[0].replace(/\/+$/, '');
   s = s.replace(/:\w+/g, '{param}');
   s = s.replace(/\{[^}]+\}/g, '{param}');
   s = s.replace(/\[[^\]]+\]/g, '{param}');
