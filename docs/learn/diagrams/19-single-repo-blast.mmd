@@ -3,73 +3,68 @@
 %% 配套：session §25 / 路线图 v2.1 §12
 
 flowchart TB
-    TRACE[🔍 真 Jaeger trace<br/>5436e186 cses /Demo/triggerLoadIncrement<br/>cookieId=69f1...]
+    TRACE[真 Jaeger trace<br/>5436e186 cses Demo triggerLoadIncrement]
 
-    subgraph S2_BLOCK["🎯 S2 · Trace2Code Resolver"]
-        S2_NORM[jaeger-span-normalizer<br/>抽 contractId<br/>http::POST::/Demo/triggerLoadIncrement]
+    subgraph S2_BLOCK["S2 · Trace2Code Resolver"]
+        S2_NORM[jaeger-span-normalizer<br/>抽 contractId]
         S2_CY[mcp-bridge.resolveHandler<br/>双 label cypher 反查]
-        S2_HIT[Method:CrossRepoDemoController<br/>.triggerLoadIncrement#2<br/>conf=0.7 name+path]
+        S2_HIT[Method CrossRepoDemoController<br/>triggerLoadIncrement<br/>conf=0.7 name+path]
     end
 
-    subgraph S3_BLOCK["💥 S3 · Blast Radius depth=2"]
-        S3_LOCAL[本仓 KuzuDB BFS<br/>105k symbols / 313k edges]
-        S3_RES[7 callees depth=3<br/>→ executeLoadIncrementChain<br/>→ validate/prepare/call/record<br/>→ MattermostClient]
+    subgraph S3_BLOCK["S3 · Blast Radius depth=2"]
+        S3_LOCAL[本仓 KuzuDB BFS<br/>105k symbols 313k edges]
+        S3_RES[7 callees depth=3<br/>executeLoadIncrementChain<br/>validate prepare call record]
     end
 
-    subgraph S4_BLOCK["🔬 S4 · Forensics"]
+    subgraph S4_BLOCK["S4 · Forensics"]
         S4_RES[git log -- handler.java<br/>Top 3 嫌疑 commit]
     end
 
-    subgraph S5_BLOCK["🧪 S5 · Test Generator"]
-        S5_R1[R-1 scaffold advisory<br/>v1.2 fix Test_methodName.java]
-        S5_LLM[R-14.6 LLM claude -p<br/>budget=$5]
+    subgraph S5_BLOCK["S5 · Test Generator"]
+        S5_R1[R-1 scaffold advisory<br/>v1.2 fix Test methodName.java]
+        S5_LLM[R-14.6 LLM claude -p<br/>budget 5 美元]
         S5_DECISION{LLM 决策}
-        S5_PATCH[真 patch + assertThrows<br/>#65: transferTo guard $1.42]
-        S5_ABORT[abort + 诊断报告<br/>#68: trace 无 stacktrace]
+        S5_PATCH[真 patch + assertThrows<br/>case 65 transferTo guard]
+        S5_ABORT[abort + 诊断报告<br/>case 68 trace 无 stacktrace]
     end
 
-    subgraph S6_BLOCK["🚀 S6 · K8s Preview"]
+    subgraph S6_BLOCK["S6 · K8s Preview"]
         S6_NS[ns gitnexus-preview-* 强制]
         S6_GREEN[pass=1 fail=0 exit=0]
     end
 
-    subgraph S7_BLOCK["📤 S7 · Auto-PR/MR"]
+    subgraph S7_BLOCK["S7 · Auto-PR/MR"]
         S7_GATE[LIVE 三因子<br/>label + env + S6 绿勾]
-        S7_MR[MR !47 / !48 真发<br/>auto-fix/issue-N → main]
+        S7_MR[MR !47 和 !48 真发]
     end
 
-    REPO_LBUG[(本仓 .gitnexus/lbug)]
-    ORCH[🎼 Orchestrator]
+    REPO_LBUG[(本仓 .gitnexus lbug)]
+    ORCH[Orchestrator]
 
     TRACE --> S2_NORM
     S2_NORM --> S2_CY
-    S2_CY -.读.-> REPO_LBUG
+    S2_CY -.-> REPO_LBUG
     S2_CY --> S2_HIT
     S2_HIT --> S3_LOCAL
-    S3_LOCAL -.读.-> REPO_LBUG
+    S3_LOCAL -.-> REPO_LBUG
     S3_LOCAL --> S3_RES
     S3_RES --> S4_RES
     S4_RES --> S5_R1
     S5_R1 --> S5_LLM
     S5_LLM --> S5_DECISION
-    S5_DECISION -->|stacktrace 全| S5_PATCH
-    S5_DECISION -->|trace 信号薄| S5_ABORT
+    S5_DECISION --> S5_PATCH
+    S5_DECISION --> S5_ABORT
     S5_PATCH --> S6_NS
     S5_ABORT --> S6_NS
     S6_NS --> S6_GREEN
     S6_GREEN --> S7_GATE
     S7_GATE --> S7_MR
 
-    ORCH -.管控.-> S2_NORM
-    ORCH -.管控.-> S5_LLM
-    ORCH -.管控.-> S7_GATE
+    ORCH -.-> S2_NORM
+    ORCH -.-> S5_LLM
+    ORCH -.-> S7_GATE
 
-    style S2_HIT fill:#c8e6c9,stroke:#1b5e20,stroke-width:3px
-    style S3_RES fill:#c8e6c9,stroke:#1b5e20
-    style S5_PATCH fill:#c8e6c9,stroke:#1b5e20,stroke-width:3px
-    style S5_ABORT fill:#ffe0b2,stroke:#e65100
-    style S6_GREEN fill:#c8e6c9,stroke:#1b5e20
-    style S7_MR fill:#a5d6a7,stroke:#1b5e20,stroke-width:3px
+    style S7_MR fill:#d4f4dd
+    style S2_HIT fill:#d4f4dd
+    style S5_ABORT fill:#fff5b8
     style REPO_LBUG fill:#fff5b8
-    style ORCH fill:#b3e5fc,stroke:#01579b,stroke-width:3px
-    style TRACE fill:#fff8dc,stroke:#b8860b

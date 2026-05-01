@@ -3,62 +3,55 @@
 %% 配套：session §25 / 路线图 v2.1 §12
 
 flowchart LR
-    subgraph CSES["📘 cses-java 仓"]
+    subgraph CSES["cses-java 仓"]
         CSES_CTRL[CrossRepoDemoController<br/>triggerLoadIncrement]
         CSES_SVC[CrossRepoDemoService<br/>4 段 helper]
         CSES_CLIENT[MattermostClient<br/>GrpcClient interface]
         CSES_COMP[CompanyController<br/>readMember<br/>readDeptPositions<br/>readOrganizes]
     end
 
-    subgraph MM["📗 mattermost 仓"]
+    subgraph MM["mattermost 仓"]
         MM_HANDLER[csesapi handler<br/>csesCrossRepoDemo]
         MM_DEMO[executeCrossRepoDemoChain<br/>6 段 helper]
         MM_GRPC[app.ReadMember<br/>app.ReadDeptPositions<br/>app.ReadOrganizes]
         MM_INC[csesapi handler<br/>loadSingleIncrementChannel]
     end
 
-    subgraph BRIDGE_GROUP["🌉 cses-mm group bridge.lbug"]
+    subgraph BRIDGE_GROUP["cses-mm group bridge.lbug"]
         BRIDGE[(54 ContractLink<br/>1275 Contracts)]
         M2M_C2M[manifest cses to mm<br/>44 条 csesapi]
         M2M_M2C[manifest mm to cses<br/>10 条 Company]
         EXACT[exact auto-extract<br/>java.ts Micronaut 抽]
     end
 
-    subgraph S3_CY["💥 S3 standard-cross-link"]
+    subgraph S3_CY["S3 standard-cross-link"]
         CYPHER[cypher MATCH consumer-l-provider<br/>WHERE repo+contractId+role<br/>RETURN partner+matchType+conf]
         HIT[manifest plus exact conf=1.00<br/>双向都命中]
     end
 
-    LIVE_MR[🚀 双向 6 LIVE MR<br/>cses !45 !47 !48<br/>mm !9 !10 !11]
+    LIVE_MR[双向 6 LIVE MR<br/>cses !45 !47 !48<br/>mm !9 !10 !11]
 
-    %% cses to mm 调用链
     CSES_CTRL --> CSES_SVC
     CSES_SVC --> CSES_CLIENT
-    CSES_CLIENT -.->|"grpc 跨仓"| MM_INC
+    CSES_CLIENT -.-> MM_INC
 
-    %% mm to cses 调用链
     MM_HANDLER --> MM_DEMO
     MM_DEMO --> MM_GRPC
-    MM_GRPC -.->|"grpc 跨仓"| CSES_COMP
+    MM_GRPC -.-> CSES_COMP
 
-    %% 索引/manifest 抽取
-    CSES_CLIENT -.->|"java.ts 抽 consumer"| M2M_C2M
-    CSES_COMP -.->|"java.ts 抽 provider"| EXACT
-    MM_GRPC -.->|"manifest 显式声明"| M2M_M2C
-    MM_INC -.->|"go.ts 不识别 用 manifest 兜底"| M2M_C2M
+    CSES_CLIENT -.-> M2M_C2M
+    CSES_COMP -.-> EXACT
+    MM_GRPC -.-> M2M_M2C
+    MM_INC -.-> M2M_C2M
 
     M2M_C2M --> BRIDGE
     M2M_M2C --> BRIDGE
     EXACT --> BRIDGE
 
-    %% Pipeline 跑流程
-    CYPHER -.->|"读"| BRIDGE
+    CYPHER -.-> BRIDGE
     CYPHER --> HIT
     HIT --> LIVE_MR
 
-    style CSES fill:#cfe2ff,stroke:#0a4d8c
-    style MM fill:#d4edda,stroke:#155724
-    style BRIDGE fill:#e1bee7,stroke:#4a148c
-    style HIT fill:#c8e6c9,stroke:#1b5e20,stroke-width:3px
-    style LIVE_MR fill:#a5d6a7,stroke:#1b5e20,stroke-width:3px
-    style CYPHER fill:#fff3cd,stroke:#856404
+    style LIVE_MR fill:#d4f4dd
+    style HIT fill:#d4f4dd
+    style BRIDGE fill:#fff5b8

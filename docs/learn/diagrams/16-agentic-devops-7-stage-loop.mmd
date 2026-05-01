@@ -3,46 +3,40 @@
 %% 细粒度：19 单仓 / 20 跨仓 / 21 全局视野
 
 flowchart TB
-    OBS[🔍 1.观测<br/>/observe + Jaeger + Prom<br/>真自取 traceUrl]
-    ISSUE[/📋 GitLab Issue<br/>traceId + repo + path/]
-    PRE[⚙️ pre · Auto-reindex Webhook<br/>HMAC + dedup + 索引保鲜]
-    S2[🎯 2.锚点 · Trace2Code<br/>v1.2 B1 path 保留 camelCase ✅<br/>v1.2 B2 cypher-go-path-only ✅<br/>lesson: path 末段 = method 名]
-    S3[💥 3.爆炸 · blast radius<br/>主路径 lookupStandardCrossLink ⭐<br/>manifest conf=1.00<br/>v1.2 B3 manifest 46 条 ✅]
-    S4[🔬 4.溯源 · git log ∩ blast<br/>嫌疑 commit Top 3]
-    S5[🧪 5.生成 · Test Generator<br/>R-1 scaffold + R-14.6 LLM<br/>v1.2 fix Test_methodName.java ✅]
-    S6[🚀 6.执行 · K8s Preview<br/>ns gitnexus-preview-* 守门]
-    S7[📤 7.回写 · Auto-PR/MR<br/>LIVE 三因子 + R-12 policy<br/>v1.0~v1.2 双向 6 LIVE MR<br/>cses !45/!47/!48 + mm !9/!10/!11]
-    LOOP[/开发者 review/merge<br/>新一轮 /observe 验证/]
+    OBS[1.观测<br/>observe + Jaeger + Prom]
+    ISSUE[/GitLab Issue<br/>traceId + repo + path/]
+    PRE[pre · Auto-reindex Webhook<br/>HMAC + dedup + 索引保鲜]
+    S2[2.锚点 · Trace2Code<br/>v1.2 B1 path camelCase 保留<br/>v1.2 B2 cypher-go-path-only<br/>lesson: path 末段 = method 名]
+    S3[3.爆炸 · blast radius<br/>主路径 lookupStandardCrossLink<br/>manifest conf=1.00<br/>v1.2 B3 manifest 46 条]
+    S4[4.溯源 · git log ∩ blast<br/>嫌疑 commit Top 3]
+    S5[5.生成 · Test Generator<br/>R-1 scaffold + R-14.6 LLM<br/>v1.2 fix Test_methodName.java]
+    S6[6.执行 · K8s Preview<br/>ns gitnexus-preview-* 守门]
+    S7[7.回写 · Auto-PR/MR<br/>LIVE 三因子 + R-12 policy<br/>v1.0~v1.2 双向 6 LIVE MR]
+    LOOP[/开发者 review/merge<br/>新一轮 observe 验证/]
 
-    ORCH[🎼 Pipeline Orchestrator<br/>串 S2→S7 + 失败兜底<br/>standard wiring v1.1]
-    P2[🔗 P2 multi-hop crossDepth>1]
-    P6[🐫 P6 OCaml LanguageProvider]
-    B4[🟡 v1.2 B4 mattermost<br/>BaseRoutes chain extractor<br/>backlog]
+    ORCH[Pipeline Orchestrator<br/>串 S2 到 S7 + 失败兜底]
+    P2[P2 multi-hop crossDepth 大于 1]
+    P6[P6 OCaml LanguageProvider]
+    B4[v1.2 B4 mattermost<br/>BaseRoutes chain extractor<br/>backlog]
 
-    OBS -->|发现 error/慢| ISSUE
-    ISSUE -->|webhook issue.open| PRE
-    PRE -->|图最新| S2
-    S2 -->|symbol UID| S3
-    S3 -->|blast radius| S4
-    S4 -->|嫌疑提交| S5
-    S5 -->|patch + test| S6
-    S6 -->|junit pass| S7
+    OBS --> ISSUE
+    ISSUE --> PRE
+    PRE --> S2
+    S2 --> S3
+    S3 --> S4
+    S4 --> S5
+    S5 --> S6
+    S6 --> S7
     S7 --> LOOP
-    LOOP -.闭环.-> OBS
+    LOOP -.-> OBS
 
-    ORCH -.管控.-> S2
-    ORCH -.管控.-> S3
-    ORCH -.管控.-> S5
-    ORCH -.管控.-> S6
-    ORCH -.管控.-> S7
-    P2 -.增强.-> S3
-    B4 -.待修.-> S3
+    ORCH -.-> S2
+    ORCH -.-> S3
+    ORCH -.-> S5
+    ORCH -.-> S6
+    ORCH -.-> S7
+    P2 -.-> S3
+    B4 -.-> S3
 
-    style S2 fill:#b3e5fc,stroke:#01579b,stroke-width:3px
-    style S3 fill:#b3e5fc,stroke:#01579b,stroke-width:3px
-    style S5 fill:#c8e6c9,stroke:#1b5e20,stroke-width:3px
-    style S7 fill:#c8e6c9,stroke:#1b5e20,stroke-width:3px
-    style ORCH fill:#b3e5fc,stroke:#01579b,stroke-width:3px
-    style B4 fill:#ffe0b2,stroke:#e65100,stroke-dasharray: 4 2
-    style P2 fill:#eaeaea,stroke:#666,stroke-dasharray: 3 3
-    style P6 fill:#eaeaea,stroke:#666,stroke-dasharray: 3 3
+    style S7 fill:#d4f4dd
+    style B4 fill:#fff5b8

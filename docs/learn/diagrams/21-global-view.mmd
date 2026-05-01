@@ -3,121 +3,103 @@
 %% 配套：session §25 / 路线图 v2.1 §12 / 16+19+20 mmd
 
 flowchart TB
-    subgraph CLIENT["👤 终端触发"]
-        USER[开发者 / 真用户<br/>cookieId 真 session]
+    subgraph CLIENT["终端触发"]
+        USER[开发者 真用户<br/>cookieId 真 session]
         CURL[curl Apifox Tauri<br/>POST Demo triggerLoadIncrement<br/>POST cses health csesCrossRepoDemo]
     end
 
-    subgraph BIZ["🏢 业务双仓"]
+    subgraph BIZ["业务双仓"]
         CSES_BIZ[cses-java 端口 3399<br/>Micronaut + paas grpc]
         MM_BIZ[mattermost 端口 8065<br/>gorilla mux + grpcx9]
     end
 
-    subgraph OBS["🔭 可观测性"]
-        OTEL[OpenTelemetry SDK<br/>HTTP+grpc 入出]
+    subgraph OBS["可观测性"]
+        OTEL[OpenTelemetry SDK]
         JAEGER[Jaeger Query<br/>192.168.6.66 端口 32281]
         PROM[Prometheus<br/>192.168.6.66 端口 30090]
         OBSERVE[observe skill<br/>巡检建 issue]
     end
 
-    subgraph GITLAB["🦊 GitLab git.yundiz.com"]
-        REPO_GL[cses + mattermost project]
+    subgraph GITLAB["GitLab git.yundiz.com"]
         ISSUES[Issues<br/>auto-detected + LIVE label]
-        MRS[🚀 双向 6 LIVE MR<br/>cses !45 !47 !48<br/>mm !9 !10 !11]
-        WH_OUT[GitLab webhook<br/>X-Gitlab-Token]
+        MRS[双向 6 LIVE MR<br/>cses !45 !47 !48<br/>mm !9 !10 !11]
+        WH_OUT[GitLab webhook]
     end
 
-    subgraph GNX["🧠 GitNexus 1.6.2 索引底座"]
-        EVAL[gitnexus eval-server 端口 4848<br/>tool cypher 和 context 和 impact]
+    subgraph GNX["GitNexus 1.6.2 索引底座"]
+        EVAL[gitnexus eval-server 端口 4848]
         IDX_CSES[(repos cses lbug<br/>107k symbols)]
         IDX_MM[(repos mm lbug<br/>160k symbols)]
-        BRIDGE_DB[(groups cses-mm bridge.lbug<br/>1275 contracts<br/>54 ContractLink)]
+        BRIDGE_DB[(groups cses-mm bridge.lbug<br/>54 ContractLink)]
     end
 
-    subgraph WEBHOOK["⚙️ webhook server localhost 3034"]
-        WS[start-webhook-server.ts<br/>SECRET + AUTOPR_LIVE + TOKEN_MAP]
-        ORCH[🎼 Pipeline Orchestrator<br/>S2 到 S7 串联]
+    subgraph WEBHOOK["webhook server localhost 3034"]
+        WS[start-webhook-server.ts]
+        ORCH[Pipeline Orchestrator<br/>S2 到 S7 串联]
     end
 
-    subgraph LLM_BLOCK["🤖 LLM patch R-14"]
+    subgraph LLM_BLOCK["LLM patch R-14"]
         CLAUDE[claude -p 本机<br/>budget 5 美元]
-        DEC{trace 有<br/>error+stacktrace?}
+        DEC{trace 有<br/>error+stacktrace}
         PATCH[真 patch + assertThrows]
         ABORT[abort + 诊断报告]
     end
 
-    subgraph K8S["☸️ K8s Preview S6"]
+    subgraph K8S["K8s Preview S6"]
         K8S_NS[ns gitnexus-preview-* 强制]
         TEST_RUN[junit XML pass fail]
     end
 
-    subgraph BACKLOG["📋 v1.2 backlog"]
-        B1[B1 path camelCase ✅]
-        B2[B2 Go path-only anchor ✅]
-        B3[B3 manifest 扩 ✅]
-        B5_FIX[Test methodName.java fix ✅]
-        B4[B4 BaseRoutes chain extractor 🟡]
+    subgraph BACKLOG["v1.2 backlog"]
+        B1[B1 path camelCase 已落地]
+        B2[B2 Go path-only anchor 已落地]
+        B3[B3 manifest 扩 已落地]
+        B5_FIX[Test methodName.java fix 已落地]
+        B4[B4 BaseRoutes chain extractor 待修]
     end
 
-    %% 用户 to 业务
     USER --> CURL
     CURL --> CSES_BIZ
     CURL --> MM_BIZ
-    CSES_BIZ <-.->|"grpc paas"| MM_BIZ
+    CSES_BIZ <-.-> MM_BIZ
 
-    %% 业务 to 可观测
-    CSES_BIZ -.->|"OTel"| OTEL
-    MM_BIZ -.->|"OTel"| OTEL
+    CSES_BIZ -.-> OTEL
+    MM_BIZ -.-> OTEL
     OTEL --> JAEGER
-    CSES_BIZ -.->|"metrics"| PROM
-    MM_BIZ -.->|"metrics"| PROM
+    CSES_BIZ -.-> PROM
+    MM_BIZ -.-> PROM
 
-    %% 巡检 to issue
     JAEGER --> OBSERVE
     PROM --> OBSERVE
-    OBSERVE -->|"gitnexus trace 块"| ISSUES
+    OBSERVE --> ISSUES
     ISSUES --> WH_OUT
     WH_OUT --> WS
     WS --> ORCH
 
-    %% Orchestrator 调底座
-    ORCH -.->|"调"| EVAL
-    EVAL -.->|"读"| IDX_CSES
-    EVAL -.->|"读"| IDX_MM
-    ORCH -.->|"standard cross-link"| BRIDGE_DB
+    ORCH -.-> EVAL
+    EVAL -.-> IDX_CSES
+    EVAL -.-> IDX_MM
+    ORCH -.-> BRIDGE_DB
 
-    %% Orchestrator 调 LLM
     ORCH --> DEC
-    DEC -->|"有"| CLAUDE
-    DEC -->|"无"| ABORT
+    DEC --> CLAUDE
+    DEC --> ABORT
     CLAUDE --> PATCH
     CLAUDE --> ABORT
 
-    %% S6 + S7
     PATCH --> K8S_NS
     ABORT --> K8S_NS
     K8S_NS --> TEST_RUN
-    TEST_RUN -->|"LIVE 三因子全过"| MRS
-    TEST_RUN -.->|"dryRun"| ISSUES
+    TEST_RUN --> MRS
+    TEST_RUN -.-> ISSUES
 
-    %% 业务源 to 索引建立
-    CSES_BIZ -.->|"gitnexus analyze"| IDX_CSES
-    MM_BIZ -.->|"gitnexus analyze"| IDX_MM
-    IDX_CSES -.->|"bootstrap"| BRIDGE_DB
-    IDX_MM -.->|"bootstrap"| BRIDGE_DB
+    CSES_BIZ -.-> IDX_CSES
+    MM_BIZ -.-> IDX_MM
+    IDX_CSES -.-> BRIDGE_DB
+    IDX_MM -.-> BRIDGE_DB
 
-    style CSES_BIZ fill:#cfe2ff,stroke:#0a4d8c
-    style MM_BIZ fill:#d4edda,stroke:#155724
-    style JAEGER fill:#ffe0b2,stroke:#e65100
-    style OBSERVE fill:#b3e5fc,stroke:#01579b
-    style MRS fill:#a5d6a7,stroke:#1b5e20,stroke-width:3px
-    style EVAL fill:#e1bee7,stroke:#4a148c
-    style BRIDGE_DB fill:#e1bee7,stroke:#4a148c,stroke-width:3px
-    style ORCH fill:#b3e5fc,stroke:#01579b,stroke-width:3px
-    style PATCH fill:#c8e6c9,stroke:#1b5e20
-    style ABORT fill:#ffe0b2,stroke:#e65100
-    style B4 fill:#ffe0b2,stroke:#e65100,stroke-dasharray: 4 2
-    style B1 fill:#c8e6c9,stroke:#1b5e20
-    style B2 fill:#c8e6c9,stroke:#1b5e20
-    style B3 fill:#c8e6c9,stroke:#1b5e20
-    style B5_FIX fill:#c8e6c9,stroke:#1b5e20
+    style MRS fill:#d4f4dd
+    style PATCH fill:#d4f4dd
+    style ABORT fill:#fff5b8
+    style B4 fill:#fff5b8
+    style BRIDGE_DB fill:#fff5b8
