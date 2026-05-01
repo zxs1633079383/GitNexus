@@ -1,0 +1,100 @@
+%% Agentic DevOps · 单仓爆炸半径 (single-repo blast)
+%% v1.2 sprint (2026-05-01) — cses 自己内部一条 trace 完整 7 阶段闭环
+%% 配套文档：session.md §25 / 路线图 v2.1 §12 / lbug-切换-环境清单 §6
+%%
+%% 真 evidence (cses #65 → MR !47, #68 → MR !48):
+%%   - trace 5436e186 (POST /Demo/triggerLoadIncrement, 2 spans, xpa-12 service)
+%%   - trace 0cd8d135 (POST /taskManage/task/member/reject, 3 spans, full stacktrace)
+%%   - S2 真命中 Method:CrossRepoDemoController.triggerLoadIncrement#2 (path末段=method名)
+%%
+%% 单仓的"内部" — 不出 cses 仓界，本仓 KuzuDB 索引内反查 + 本仓 git log + 本仓 MR
+
+flowchart TB
+    subgraph Trigger["🔍 触发源 — Jaeger 真 trace"]
+        TRACE["trace 5436e186 / 0cd8d135<br/>cookieId=69f1...<br/>2-3 spans (HTTP + grpc client)"]:::trace
+    end
+
+    subgraph S2["🎯 S2 · Trace2Code Resolver (本仓)"]
+        S2_NORM["jaeger-span-normalizer<br/>抽 contractId=http::POST::/Demo/triggerLoadIncrement"]:::s2
+        S2_CY["mcp-bridge.resolveHandler<br/>cypher: MATCH (m:Method) WHERE m.name='triggerLoadIncrement'<br/>     AND m.filePath ENDS WITH 'CrossRepoDemoController.java'"]:::s2
+        S2_HIT["✅ Method:CrossRepoDemoController.java:<br/>CrossRepoDemoController.triggerLoadIncrement#2<br/>conf=0.7 (name+path 双过滤)"]:::hit
+    end
+
+    subgraph S3["💥 S3 · Blast Radius (本仓 only, depth=2)"]
+        S3_LOCAL["MATCH (caller:Method)-[:CodeRelation*1..2]->(handler)<br/>本仓 cses KuzuDB 105k symbols / 313k edges"]:::s3
+        S3_RES["7 callees depth=3:<br/>triggerLoadIncrement → executeLoadIncrementChain<br/>→ validateRequest / prepareCrossRepoCall / callMattermostLoadIncrement / recordCrossRepoOutcome"]:::hit
+    end
+
+    subgraph S4["🔬 S4 · Auto Regression Forensics (本仓)"]
+        S4_GIT["cd /Users/mac28/workspace/java/cses<br/>git log -- CrossRepoDemoController.java"]:::s4
+        S4_RES["Top 3 嫌疑 commit (本仓 only):<br/>0d08bbc9 / ee72f595 / 6e2d482e"]:::hit
+    end
+
+    subgraph S5["🧪 S5 · E2E Test Generator"]
+        S5_R1["R-1 scaffold (advisory)<br/>parseMethodId 适配 #N 后缀<br/>(commit fix(test-gen): Test_unknown.java→真 method 名)"]:::s5
+        S5_OUT["✅ src/test/auto-generated/Test_triggerLoadIncrement.java<br/>(2026-05-01 修, 不再是 Test_unknown.java)"]:::hit
+        S5_LLM["R-14.6 LLM 真断言<br/>claude -p, budget=$5, max-concurrent=1"]:::s5
+        S5_DECISION{"LLM 决策"}
+        S5_PATCH["✅ 真 patch + assertThrows<br/>(#65: transferTo guard, $1.42)"]:::hit
+        S5_ABORT["⚠️ abort + 诊断报告<br/>(#68: trace 无 stacktrace)"]:::warn
+    end
+
+    subgraph S6["🚀 S6 · K8s Preview (本仓 image)"]
+        S6_NS["ns: gitnexus-preview-* (强制)"]:::s6
+        S6_RUN["注入候选 + 跑 unit + contract test<br/>(fake JUnit XML demo / 真 image 生产)"]:::s6
+        S6_GREEN["✅ pass=1 fail=0 exit=0"]:::hit
+    end
+
+    subgraph S7["📤 S7 · Auto-PR/MR Creator (本仓 only)"]
+        S7_GATE["LIVE 三因子<br/>① label gitnexus:auto-pr-live<br/>② env GITNEXUS_AUTOPR_LIVE=1<br/>③ S6 真绿勾"]:::s7
+        S7_PUT["GitLab put-files PUT-400-fallback-POST<br/>(lbug-switch v1.1 修)"]:::s7
+        S7_MR["✅ MR !47 / !48 真发<br/>auto-fix/issue-N → main<br/>含 .gitnexus/reports/auto-pr-issue-N.md"]:::live
+    end
+
+    subgraph Bridge["🌉 索引底座 (本仓内部)"]
+        REPO_KUZU["~/.gitnexus/repos/cses/lbug<br/>105k symbols / 313k edges<br/>含 Method / Class / File / Folder / Route<br/>+ 单一 CodeRelation 关系"]:::index
+        ORCH["Pipeline Orchestrator<br/>OrchestratorDeps 注入<br/>(orchestrator.ts 串 S2-S7)"]:::orch
+    end
+
+    TRACE --> S2_NORM
+    S2_NORM --> S2_CY
+    S2_CY -.读.-> REPO_KUZU
+    S2_CY --> S2_HIT
+    S2_HIT --> S3_LOCAL
+    S3_LOCAL -.读.-> REPO_KUZU
+    S3_LOCAL --> S3_RES
+    S3_RES --> S4_GIT
+    S4_GIT --> S4_RES
+    S4_RES --> S5_R1
+    S5_R1 --> S5_OUT
+    S5_OUT --> S5_LLM
+    S5_LLM --> S5_DECISION
+    S5_DECISION -->|有 stacktrace + 真 root cause| S5_PATCH
+    S5_DECISION -->|trace 信号薄| S5_ABORT
+    S5_PATCH --> S6_NS
+    S5_ABORT --> S6_NS
+    S6_NS --> S6_RUN
+    S6_RUN --> S6_GREEN
+    S6_GREEN --> S7_GATE
+    S7_GATE --> S7_PUT
+    S7_PUT --> S7_MR
+
+    ORCH -.管控.-> S2
+    ORCH -.管控.-> S3
+    ORCH -.管控.-> S4
+    ORCH -.管控.-> S5
+    ORCH -.管控.-> S6
+    ORCH -.管控.-> S7
+
+    classDef trace fill:#fff8dc,stroke:#b8860b,color:#000,stroke-width:2px
+    classDef s2 fill:#cfe2ff,stroke:#0a4d8c,color:#000,stroke-width:2px
+    classDef s3 fill:#d4edda,stroke:#155724,color:#000,stroke-width:2px
+    classDef s4 fill:#f8d7da,stroke:#721c24,color:#000,stroke-width:2px
+    classDef s5 fill:#fff3cd,stroke:#856404,color:#000,stroke-width:2px
+    classDef s6 fill:#d1ecf1,stroke:#0c5460,color:#000,stroke-width:2px
+    classDef s7 fill:#e2d5f0,stroke:#4b0082,color:#000,stroke-width:2px
+    classDef hit fill:#c8e6c9,stroke:#1b5e20,color:#000,stroke-width:3px
+    classDef warn fill:#ffe0b2,stroke:#e65100,color:#000,stroke-width:2px
+    classDef live fill:#a5d6a7,stroke:#1b5e20,color:#000,stroke-width:3px
+    classDef index fill:#e1bee7,stroke:#4a148c,color:#000,stroke-width:2px
+    classDef orch fill:#b3e5fc,stroke:#01579b,color:#000,stroke-width:3px

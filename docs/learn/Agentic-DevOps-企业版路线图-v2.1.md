@@ -403,3 +403,86 @@ da530cfd  fix(orchestrator): S5 仅对 Java handler 生成 scaffold, Go/Rust/TS 
 - 31/31 tests pass (orchestrator + cross-impact + manifest-extractor)
 - 24/24 tests pass (lbug-adapter + pool-adapter + bridge-db)
 - 12/12 tests pass (auto-pr providers, 含 put-files fix)
+
+---
+
+## 12. lbug-switch v1.2 sprint 收尾闭环 (2026-05-01)
+
+> 配套文档: [session.md §25](../../session.md), [16/19/20/21 mermaid](./diagrams/)
+> tag: `lbug-switch/v1.2.0-LIVE` (sprint final, 双向 6 MR 集齐)
+
+### 12.1 主线
+
+把 §11.5 暴露的 v1.2 sprint backlog 按优先级落地, 同时通过双向真业务 grpc demo 验证主航道 7 阶段闭环 + 跨仓爆炸半径分析双向真发 MR.
+
+### 12.2 v1.2 backlog 状态更新
+
+| backlog | v1.1 (起) | v1.2 (终) | 落地点 |
+|---|---|---|---|
+| **B1** path 归一化保留 camelCase | 高优 backlog | ✅ 落地 | `gitnexus/src/core/group/extractors/http-route-extractor.ts:61` 去 `.toLowerCase()`, 8 文件 86/86 单测过 |
+| **B2** Go path-only anchor | 高优 backlog | ✅ 落地 | `gitnexus/scripts/mcp-bridge.ts:824` 加 `cypher-go-path-only` tier (conf=0.5) |
+| **B3** manifest 扩 csesapi | 中优 backlog | ✅ 落地 | cses-mm group.yaml 13→46 条, bridge.lbug 1275 contracts / 54 ContractLink |
+| **B4** mattermost BaseRoutes chain extractor | 中优 backlog | 🟡 仍 backlog | go.ts 暂不识别 `BaseRoutes.X.Handle` chain, 用 manifest (B3) 兜底 |
+| **B5** 撤 lichao176 fork override | 低优 backlog | 🟡 仍 backlog | 等上游 ladybugdb 0.16.1 |
+| **bonus** S5 `Test_unknown.java` 修 | 未识别 | ✅ 落地 | `parseMethodId` 适配 `#N` suffix (issue #68 evidence, agent 自动修) |
+
+### 12.3 v1.2 真增量 (落地)
+
+| 增量 | 文件 | 真证据 |
+|---|---|---|
+| ① B1 path camelCase 保留 | `http-route-extractor.ts` + `jaeger-span-normalizer.test.ts` | issue #62/#27/#64 contractId 真保留 `incrementByChannelId` (旧 lowercase 副作用消除) |
+| ② B2 Go path-only anchor tier | `mcp-bridge.ts` `cypher-go-path-only` | mm-side trace anchor S2 18ms→236ms (真试 anchor 不再 give up) |
+| ③ B3 manifest 46 条扩 | `~/.gitnexus/groups/cses-mm/group.yaml` | bridge.lbug 13→54 ContractLink, standard cross-link manifest conf=1.0 双向命中 |
+| ④ 双向真业务 demo | cses `CrossRepoDemoController` + mm `csesCrossRepoDemo` | path 末段 = method 名让 S2 命中真 controller / Function (#68/#29 evidence) |
+| ⑤ S5 Test_<method>.java fix | `mcp-bridge.parseMethodId` `#N` suffix | agent 提交 commit `bc07e4c5`, 单测 10/10 pass |
+
+### 12.4 双向真 LIVE MR 集齐 (sprint 终态)
+
+```
+v1.0.0-LIVE: cses MR !45 (issue #61 合成 trace)
+v1.1.0-LIVE: mm MR !9 (issue #25 合成 trace) + mm MR !10 (issue #26 真 Jaeger)
+v1.2.0-LIVE: cses MR !47 (issue #65 真 stacktrace) + cses MR !48 (issue #68 真业务 demo)
+             + mm MR !11 (issue #29 真业务 demo)
+```
+
+**真 sprint 闭环**: cses 真发 3 个 MR (!45/!47/!48) + mm 真发 3 个 MR (!9/!10/!11), 双向 6 MR 全部 LIVE 真发, GitLab `auto-fix/issue-N → main` 真分支.
+
+### 12.5 ⭐ path 末段 = method 名 (新增 lesson)
+
+GitNexus S2 反查命中真 handler 的核心算法 = `deriveHandlerNameCandidates` 用 path 拆段推 method 名候选. 让 path 末段 = controller method 名是命中真业务 method 的最快路径, 不需要改 GitNexus 一行代码:
+
+```
+路径设计:           /Demo/triggerLoadIncrement
+                          ↓
+deriveHandler:    [triggerLoadIncrementDemo, TriggerLoadIncrementDemo,
+                   triggerLoadIncrement, TriggerLoadIncrement]
+                                    ↓ 第 3 个直接命中
+真 handler:       Method:CrossRepoDemoController.triggerLoadIncrement#2  ✓
+```
+
+这是符合 Spring/Micronaut/gin/echo 等社区惯例的 REST API 命名风格, 给团队的硬性建议: **新增跨仓 demo / health endpoint 时, 让 path 末段直接 = handler method 名**.
+
+### 12.6 主航道约束验证 (全保留)
+
+- ✅ 7 阶段闭环不新增 stage (改动全在 S2/S3/S5 内部)
+- ✅ OrchestratorDeps 接口签名 0 改动
+- ✅ K8s 写操作只打 `gitnexus-preview-*` ns
+- ✅ R-12 auto-pr-policy block 列表完整保留
+- ✅ R-14 patch-LLM systemPrompt 隔离 + R-14.6 abort/patch 双轨
+- ✅ LIVE 三因子真发 MR (label + env + S6 真绿勾) — 6 MR 全部三因子全过
+
+### 12.7 已知非 backlog 但仍待办 (next sprint v1.3 候选)
+
+- **R-14 LLM determinism 不稳**: 同 trace 跑 4 次决策 patch / abort / patch / patch (倾向 patch 3:1)
+- **OTel error 上报缺失**: 业务返 200 但 status=failed 时不标 error tag, 5xx 也不标; 需让业务 throw exception 让 trace 带 stacktrace
+- **OTel method-level span**: 默认只 instrument HTTP server entry + grpc client, 不抽内部 method-level span. 通过"path 末段 = method 名"绕开了, 但 trace 仍偏薄
+- **B4 mattermost BaseRoutes chain extractor**: 真治本路径, 让 Go 仓 csesapi route 自动建 Route 节点, 不再依赖 manifest 维护成本
+
+### 12.8 4 张细粒度 mermaid 视图 (新增)
+
+| 视图 | 用途 |
+|---|---|
+| [16 7 阶段闭环](./diagrams/16-agentic-devops-7-stage-loop.mmd) | 业务流程视角 (S1-S7 阶段) — 加 v1.2 LIVE evidence |
+| [19 单仓视图](./diagrams/19-single-repo-blast.mmd) | 一条 trace 在本仓内部完整旅程 (cses 内部 7 阶段细节) |
+| [20 跨仓视图](./diagrams/20-cross-repo-blast.mmd) | cses ↔ mattermost 双向 contract resolution 物理拓扑 |
+| [21 全局视野](./diagrams/21-global-view.mmd) | 整个 Agentic DevOps 生态拓扑 (用户/业务双仓/Jaeger/GitNexus/webhook/LLM/K8s/GitLab) |

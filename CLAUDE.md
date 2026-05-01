@@ -1,10 +1,13 @@
-<!-- version: 1.4.0 -->
+<!-- version: 1.5.0 -->
 <!--
   Metadata: version, last reviewed, scope, model policy, reference docs, changelog.
-  Last updated: 2026-04-29 — 加 Agentic DevOps 7 阶段闭环守轨
+  Last updated: 2026-05-01 — lbug-switch v1.1 真状态同步 + v1.2 sprint backlog (B1+B2) 启动
 -->
 
-Last reviewed: 2026-04-29
+Last reviewed: 2026-05-01
+
+> **GitNexus runtime version: 1.6.2** (本地开发版 symlink, 全局 `npm ls -g gitnexus`)
+> **lbug-switch sprint**: v1.1 已收口 (commit `7963d67d`), 主路径 `lookupStandardCrossLink` (manifest, conf=1.00); v1.2 sprint 启动 (B1+B2 backlog, 见 §当前进度)
 
 ## ⚓ 主航道 — Agentic DevOps 7 阶段闭环 (绝对不偏离)
 
@@ -32,8 +35,9 @@ Last reviewed: 2026-04-29
                                        (串联 + 失败兜底 + 评论分发)
 ```
 
-视觉总览源文件：[`docs/learn/diagrams/16-agentic-devops-7-stage-loop.mmd`](docs/learn/diagrams/16-agentic-devops-7-stage-loop.mmd)
-完整路线图：[`docs/learn/Agentic-DevOps-企业版路线图-v2.md`](docs/learn/Agentic-DevOps-企业版路线图-v2.md)
+视觉总览源文件：[`docs/learn/diagrams/16-agentic-devops-7-stage-loop.mmd`](docs/learn/diagrams/16-agentic-devops-7-stage-loop.mmd) (含 lbug-switch v1.1 ⭐ 主路径 + 🚀 LIVE evidence + 🟦 v1.2 backlog 标记)
+完整路线图：[`docs/learn/Agentic-DevOps-企业版路线图-v2.1.md`](docs/learn/Agentic-DevOps-企业版路线图-v2.1.md) (§11 lbug-switch v1.1 sprint 增量)
+lbug-switch sprint 文档：[`docs/learn/lbug-切换-回归测试-环境清单-v1.md`](docs/learn/lbug-切换-回归测试-环境清单-v1.md) (§6 真巡检 #62 暴露 + §6.3 v1.2 backlog B1-B5)
 
 ### 7 阶段含义（每个阶段都有明确 boundary，写代码先对号入座）
 
@@ -65,7 +69,7 @@ Last reviewed: 2026-04-29
 3. **碰生产 namespace** (cses / postgres-cses / jaeger-cses 等): 任何 K8s 写操作只允许打到 `gitnexus-preview-*` (`core/preview/k8s-client.ts:assertNsAllowed` 强制)
 4. **改 R-12 auto-pr policy 的 block 列表** (`.github/workflows/**` / `.env*` / `.pem` / `.key` / `secrets/**`): 这是安全闸最后一道
 5. **绕过 dryRun 默认**: 真发 MR/PR 必须**三个条件全满足** — issue label `gitnexus:auto-pr-live` + env `GITNEXUS_AUTOPR_LIVE=1` + S6 真绿勾
-6. **大版本升级 GitNexus binary** (1.4.x → 2.x) 或切 KuzuDB schema: 见 `docs/backlog/gitnexus-version-sync.md`
+6. **大版本升级 GitNexus binary** 或切 KuzuDB schema (当前 1.6.2 → 2.x): 见 `docs/backlog/gitnexus-version-sync.md` 和 `docs/learn/lbug-切换-回归测试-环境清单-v1.md` §6.4 (含 v1.1 → v1.2 总览)
 7. **新增 LLM 调用点**: 必须用 `core/wiki/llm-client.ts` 同款 retry + R-18 隔离 pattern, 系统 prompt 必须有 R-14 安全约束 (不动 .github / .env / 凭证 / 不引新依赖)
 
 ### 不偏轨道的标志（自检清单）
@@ -78,14 +82,27 @@ Last reviewed: 2026-04-29
 - [ ] 改 LLM prompt 的话, R-14 安全约束没被改弱
 - [ ] commit message Conventional Commits + 中文 + 引 R-X 编号
 
-### 当前进度 (2026-04-29)
+### 当前进度 (2026-05-01)
 
-- ✅ MVP v1.0.0 / v1.1.0 — 7 阶段全实现, 真 Jaeger e2e 跑通
-- ✅ MVP v1.2.0-bridge / .1 — webhook S2/S3 走真索引 (eval-server cypher), 多仓 token + bridge repo 路由
-- ✅ e2e/v0.4.0-live-bridge — issue#18 → MR!24, 全 7 阶段 LIVE 闭环 (S6 K8s preview pass + S7 真发)
-- ✅ LIVE 真接: `scripts/patch-runner.ts` 接 `claude -p` (LIVE issue#22 → MR!27, 真改 Java 代码 + 真断言)
-- 🟡 待接: S4 forensics 真 git log (现返 `suspects: []`)
-- 🟡 待接: S5 LLM 生成真断言 (现 R-1 主动选 scaffold + TODO, 避幻觉)
+**已落地 (✅)**:
+- MVP v1.0.0 / v1.1.0 — 7 阶段全实现, 真 Jaeger e2e 跑通
+- MVP v1.2.0-bridge / .1 — webhook S2/S3 走真索引 (eval-server cypher), 多仓 token + bridge repo 路由
+- e2e/v0.4.0-live-bridge — issue#18 → MR!24, 全 7 阶段 LIVE 闭环 (S6 K8s preview pass + S7 真发)
+- LIVE 真接: `scripts/patch-runner.ts` 接 `claude -p` (LIVE issue#22 → MR!27, 真改 Java 代码 + 真断言)
+- S4 forensics 真 git log (commit `645c6e2c` P1-A 不推 TODO + P1-B 业务路径优先)
+- bridge 双 label 查询 (commit `9905147b` Method+Function, 消除 Unknown 错位)
+- B-strong contract-strong + tier-3 fuzzy fallback (commit `589ef237`)
+- **lbug-switch v1.1** (commit `7963d67d`): 主路径 `lookupStandardCrossLink` manifest conf=1.00, 双 MR 真发 (cses !45 + mattermost !9 + !10), Micronaut HTTP plugin (cses 1037 routes), put-files PUT-400-fallback-POST
+
+**v1.2 sprint backlog (🟡 待修, 2026-05-01 启动)**:
+- **B1** path 归一化保留 camelCase — `normalizeHttpPath`/`normalizeConsumerPath` 不 lowercase 末段, 解 `incrementByChannelId` manifest case mismatch (issue #62 / #27 / #64 evidence)
+- **B2** Go trace path-only anchor 增强 — UpperCamel path 末段 → Go function 名直查 Function 节点
+- **B3** manifest 扩 80+ csesapi 真接口
+- **B4** mattermost HttpRouteExtractor BaseRoutes chain 抽取
+- **B5** 撤 lichao176 fork override (等上游 ladybugdb 0.16.1)
+
+**已知非 backlog 问题**:
+- R-14 LLM patch determinism 不稳 — 同 trace 跑 3 次结果 patch / abort / patch (#63 first-run / #63 reopen / #65 evidence)
 
 
 
@@ -125,6 +142,8 @@ If always-on instructions grow, load deep conventions via conditional reads (e.g
 
 | Date | Version | Change |
 |------|---------|--------|
+| 2026-05-01 | 1.5.0 | Synced lbug-switch v1.1 收口 + v1.2 backlog (B1-B5); GitNexus runtime 1.4.x → 1.6.2 标注; 路线图改指向 v2.1; 当前进度段重写。 |
+| 2026-04-29 | 1.4.0 | 加 Agentic DevOps 7 阶段闭环守轨。 |
 | 2026-04-13 | 1.3.0 | Updated GitNexus index stats after DAG refactor. |
 | 2026-03-24 | 1.2.0 | Removed duplicated gitnexus:start block and scope table; replaced with pointers to AGENTS.md. |
 | 2026-03-23 | 1.1.0 | Updated agent instructions to match AGENTS.md. |

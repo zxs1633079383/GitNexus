@@ -1162,3 +1162,111 @@ tag: lbug-switch/v1.1.0-LIVE  (mattermost MR !9 + put-files fix)
 - `docs/learn/lbug-切换-回归测试-环境清单-v1.md` §1-§7 完整 (5 段 + LIVE evidence + #62 backlog)
 - `docs/learn/Agentic-DevOps-企业版路线图-v2.1.md` §11 加 lbug-switch v1.1 sprint
 - `docs/learn/diagrams/16-agentic-devops-7-stage-loop.mmd` 升级标 v1.1 LIVE evidence
+
+---
+
+## 25. lbug-switch v1.2 sprint 收尾闭环 (2026-05-01)
+
+> 配套文档: [Agentic-DevOps-企业版路线图-v2.1.md §12](./docs/learn/Agentic-DevOps-企业版路线图-v2.1.md), [lbug-切换-回归测试-环境清单-v1.md §6.3](./docs/learn/lbug-切换-回归测试-环境清单-v1.md)
+> 细粒度 mermaid: [16 全 7 阶段闭环](./docs/learn/diagrams/16-agentic-devops-7-stage-loop.mmd) / [19 单仓](./docs/learn/diagrams/19-single-repo-blast.mmd) / [20 跨仓](./docs/learn/diagrams/20-cross-repo-blast.mmd) / [21 全局视野](./docs/learn/diagrams/21-global-view.mmd)
+
+### 25.1 v1.2 backlog 落地总览
+
+| backlog | 状态 | 落地点 |
+|---|---|---|
+| **B1** path 归一化保留 camelCase | ✅ 落地 | `gitnexus/src/core/group/extractors/http-route-extractor.ts:61` 去掉 `.toLowerCase()`; `jaeger-span-normalizer.test.ts` 断言更新; 8 文件 86/86 单测 pass |
+| **B2** Go path-only anchor | ✅ 落地 | `gitnexus/scripts/mcp-bridge.ts:824` 加 `cypher-go-path-only` tier (conf=0.5, 介于 name+path 0.7 / name-only 0.4 之间) |
+| **B3** manifest 扩 csesapi | ✅ 落地 | `~/.gitnexus/groups/cses-mm/group.yaml` 13→46 条 (cses→mm 44 + mm→cses 10), bridge.lbug 1275 contracts / 54 ContractLink |
+| **B4** mattermost BaseRoutes chain extractor | 🟡 待修 | go.ts 暂不识别 `BaseRoutes.X.Handle` chain, 用 manifest (B3) 兜底覆盖 |
+| **B5** 撤 lichao176 fork override | 🟡 待修 | 等上游 ladybugdb 0.16.1 |
+| **bonus** S5 `Test_unknown.java` 修复 | ✅ 落地 | `parseMethodId` 适配 `Method:filePath:methodName#N` 后缀 (issue #68 evidence), agent 已提交 commit `bc07e4c5` |
+
+### 25.2 v1.2 sprint 双向真业务 demo (cses ↔ mattermost)
+
+为验证双向爆炸半径分析，在两仓加真业务 demo + 真 grpc 通信:
+
+**cses-java 仓** (Micronaut + paas grpc):
+- `org/cses/server/im/client/MattermostClient.java` — 加 `@Post("/channel/load/incrementByChannelId") loadIncrementByChannelId()` 方法
+- `org/cses/server/im/entity/request/LoadIncrementByChannelIdReq.java` — 新 Req DTO
+- `org/cses/server/demo/crossrepo/CrossRepoDemoService.java` — 4 段 helper method (validate/prepare/call/record) 让 trace 加厚
+- `org/cses/server/demo/crossrepo/CrossRepoDemoController.java` — `@Controller("/Demo")` + `@Post("/triggerLoadIncrement")` (path 末段 = method 名 lesson)
+
+**mattermost 仓** (gorilla/mux + grpcx9):
+- `server/channels/app/grpc_client.go` — 加 `ReadMember` / `ReadDeptPositions` / `ReadOrganizes` package-level function (调 cses Company endpoint)
+- `server/channels/csesapi/cross_repo_demo.go` — 6 段 orchestration handler (`csesCrossRepoDemo` → `executeCrossRepoDemoChain` → 5 helper)
+- `server/channels/csesapi/api.go` — 注册 `api.InitCrossRepoDemo()`
+
+### 25.3 ⭐ path 末段 = method 名 — 最强 lesson
+
+GitNexus S2 反查算法 `deriveHandlerNameCandidates` 按 path 拆段推 method 名。让 path 末段直接等于 controller method 名，让第一个 candidate 直接命中真业务 method 不再 fuzzy 撞测试文件:
+
+| 反例 (path 末段 ≠ method 名) | 现象 |
+|---|---|
+| `/Demo/cross-repo/load-increment` (handler `triggerLoadIncrement`) | S2 fuzzy 撞 `RepositoryMethod.invoke` 测试文件 ❌ |
+| `/api/cses/health/cross-repo-demo` (handler `csesCrossRepoDemo`) | S2 0 handlers ❌ |
+
+| 正例 (path 末段 = method 名) | 现象 |
+|---|---|
+| `/Demo/triggerLoadIncrement` | S2 第一个 candidate 直接命中 `triggerLoadIncrement#2` ✓ |
+| `/api/cses/health/csesCrossRepoDemo` | S2 直接命中 `Function:cross_repo_demo.go:csesCrossRepoDemo` ✓ |
+
+**这是符合 Spring/Micronaut/gin/echo 社区惯例的 REST API 命名风格, 不需要改 GitNexus 一行代码.**
+
+### 25.4 双向真发 6 个 LIVE MR 集齐
+
+| 方向 | issue | trace | MR | 备注 |
+|---|---|---|---|---|
+| cses → mm | #61 (合成) | manifest path | [cses !45](http://git.yundiz.com/cses/java/cses/cses/-/merge_requests/45) | v1.0.0-LIVE 真 patch + assertThrows ($0.91) |
+| cses → mm | #65 (真) | task/member/reject + stacktrace | [cses !47](http://git.yundiz.com/cses/java/cses/cses/-/merge_requests/47) | LLM 真 patch transferTo guard ($1.42) |
+| cses → mm | #68 (真业务 demo) | /Demo/triggerLoadIncrement | [cses !48](http://git.yundiz.com/cses/java/cses/cses/-/merge_requests/48) | LLM abort + 诊断报告 |
+| mm → cses | #25 (合成) | manifest path | [mm !9](http://git.yundiz.com/cses/go/mattermost/-/merge_requests/9) | v1.1.0-LIVE put-files 修通 |
+| mm → cses | #26 (真 Jaeger) | webhook 自取 56c8b | [mm !10](http://git.yundiz.com/cses/go/mattermost/-/merge_requests/10) | LLM abort + advisory |
+| mm → cses | #29 (真业务 demo) | /api/cses/health/csesCrossRepoDemo | [mm !11](http://git.yundiz.com/cses/go/mattermost/-/merge_requests/11) | LLM abort + 诊断报告 |
+
+### 25.5 主航道 7 阶段闭环 v1.2 真状态 (issue #68 evidence)
+
+```
+S2 ✅ http::POST::/Demo/triggerLoadIncrement →
+       Method:.../CrossRepoDemoController.triggerLoadIncrement#2  (真 controller method, 不再 fuzzy 撞测试)
+S3 ✅ 1 跨仓 ContractLink 命中 (manifest+exact, conf=1.0)
+S4 ✅ 0 嫌疑 commit (no topFrame.file)
+S5 ✅ 2 个测试脚手架 (parseMethodId 修后用真 method 名: Test_triggerLoadIncrement.java)
+S6 ✅ K8s preview pass=1 fail=0 exit=0
+S7 ✅ MR !48 真发 (auto-fix/issue-68 → main)
+```
+
+### 25.6 已知非 backlog 但仍待办 (next sprint 候选)
+
+- **R-14 LLM determinism**: 同一 trace 跑 4 次决策不稳 (patch / abort / patch / patch). 倾向 patch (3/4), 但 #68/#29 的 demo trace LLM 都 abort 因为 trace 没 stacktrace + 没 error tag.
+- **OTel error 上报**: cses 业务返 200 但 status=failed 时 OTel 不标 error; mm grpc service fail 返 502 时 OTel 也不标. 让业务真 throw exception 让 trace 带 stacktrace 是 LLM 出真 patch 的前置.
+- **OTel method-level span**: cses Java OTel agent 只 instrument HTTP server entry + grpc client, 不抽内部 method-level span. 需要 `@WithSpan` 显式注解才能让 trace 多 span. 我们今天通过"path 末段 = method 名"绕开这个限制.
+
+### 25.7 commits + tags
+
+```
+d89d2c76  feat(agentic-devops): lbug 切换 + 主流标准链路 + LIVE 真发 (cses MR !45)
+d946e424  fix(auto-pr): GitLab put-files PUT-400-fallback-POST + mattermost MR !9 真发
+7963d67d  docs(收口): lbug-switch v1.1 sprint 文档同步收尾
+6315f689  feat(orchestrator): slow trace 分流 — 跳 LLM + 强制 dryRun (lbug-switch v1.2)
+bc07e4c5  fix(test-gen): R-1 scaffold 用真 handler.name 生成 Test_<methodName>.java (issue#68 evidence)
+<待commit>  feat(extractor): B1 normalizeHttpPath 保留 camelCase 末段 (issue#62/#27/#64 evidence)
+<待commit>  docs(收口): lbug-switch v1.2 sprint 文档同步 + 双向 6 MR 集齐 + 4 张 mmd
+
+tag: lbug-switch/v1.0.0-LIVE        (cses MR !45)
+tag: lbug-switch/v1.1.0-LIVE        (mattermost MR !9 + put-files fix)
+tag: lbug-switch/v1.1.1-docs        (docs sync)
+tag: lbug-switch/v1.2.0-slow-skip   (slow trace 分流 phase 1)
+tag: lbug-switch/v1.2.1-b1-path-camel  (待打 — B1 落地)
+tag: lbug-switch/v1.2.2-docs           (待打 — docs 同步收尾)
+tag: lbug-switch/v1.2.0-LIVE           (待打 — sprint final 闭环, 双向 6 MR 集齐)
+```
+
+### 25.8 文档同步索引
+
+- `session.md §25` (本节) — sprint 闭环
+- `docs/learn/Agentic-DevOps-企业版路线图-v2.1.md §12` — v1.2 状态更新
+- `docs/learn/diagrams/16-agentic-devops-7-stage-loop.mmd` — 加 v1.2 LIVE evidence (S2 path末段 lesson, S5 Test_<method>.java fix, 双向 6 MR)
+- `docs/learn/diagrams/19-single-repo-blast.mmd` — 单仓视图 (新增, cses 内部 trace 完整 7 阶段)
+- `docs/learn/diagrams/20-cross-repo-blast.mmd` — 跨仓视图 (新增, cses ↔ mattermost 双向 contract resolution)
+- `docs/learn/diagrams/21-global-view.mmd` — 全局视野 (新增, 整个生态拓扑)
+- `~/.claude/skills/observe/observe-patrol.md §6.4.1 §6.4.2` — patrol skill 加 path 末段 lesson + v1.2 backlog 状态

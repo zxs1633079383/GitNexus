@@ -1,0 +1,38 @@
+flowchart LR
+    subgraph LOCAL["💻 Intel Mac 客户端 (无 LadybugDB native)"]
+        WH[webhook-server.ts<br/>S1 接 issue]
+        ORCH[orchestrator.ts<br/>S2-S7 串联]
+        BRIDGE[mcp-bridge.ts<br/>纯 HTTP 客户端<br/>517: crossBlastRadius DIY]
+    end
+
+    subgraph REMOTE["🖥️ 远程 host (Apple Silicon / Linux, 有 prebuild)"]
+        EVAL[gitnexus eval-server<br/>pm2 守护 :4848]
+        POOL[pool-adapter.ts<br/>读连接池 readOnly]
+        ADAPTER[lbug-adapter.ts<br/>analyze 写入]
+        BRIDGEDB[bridge-db.ts<br/>group sync 写]
+
+        REPO_LBUG[(repo/.gitnexus/lbug)]
+        BRIDGE_LBUG[(group/bridge.lbug)]
+    end
+
+    WH --> ORCH
+    ORCH --> BRIDGE
+
+    BRIDGE -- "/tool/cypher (✓稳定)" --> EVAL
+    BRIDGE -- "/tool/context (✓稳定)" --> EVAL
+    BRIDGE -. "/tool/impact (1.4.1 部分输入 crash)" .-> EVAL
+
+    EVAL --> POOL
+    POOL --> REPO_LBUG
+
+    ADAPTER -- "gitnexus analyze (本机 cron/手工)" --> REPO_LBUG
+    BRIDGEDB -- "gitnexus group sync" --> BRIDGE_LBUG
+    BRIDGEDB -- "gitnexus group impact 读" --> BRIDGE_LBUG
+
+    style BRIDGE fill:#d4f4dd
+    style EVAL fill:#d4f4dd
+    style POOL fill:#fff5b8
+    style ADAPTER fill:#ffd6d6
+    style BRIDGEDB fill:#ffd6d6
+    style REPO_LBUG fill:#fff5b8
+    style BRIDGE_LBUG fill:#ffd6d6
