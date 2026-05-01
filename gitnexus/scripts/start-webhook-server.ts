@@ -493,11 +493,26 @@ function methodNameFromContract(contractId: string | undefined): string | undefi
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(last) ? last : undefined;
 }
 
-// ─── Pipeline deps factory (per-issue: 选 token + 选 bridge repo) ────
-function buildDeps(fullName: string): OrchestratorDeps {
+/**
+ * lbug-switch v1.2: slow trace 与 error trace 分流.
+ *
+ * observe-patrol skill 给 issue 打的 label:
+ *   - error trace: 'error,auto-detected'           → 完整 pipeline (LLM + S6 + S7 真发)
+ *   - slow trace:  'optimization,auto-detected'    → 只跑 S2-S4 分析, 跳 LLM/S6/S7 真发
+ *
+ * 设计: slow trace 只是 perf 影响范围分析 (S3 半径 + S4 嫌疑 commit), 不该花钱跑 LLM,
+ * 也不该真发 MR. 让 dev 看完报告自己决定. error trace 才走完整闭环 (LLM 真改 + 真发 MR).
+ */
+function isSlowTraceIssue(issueLabels: string[]): boolean {
+  return issueLabels.some((l) => l === 'optimization' || l.startsWith('optimization'));
+}
+
+// ─── Pipeline deps factory (per-issue: 选 token + 选 bridge repo + slow/error 分流) ────
+function buildDeps(fullName: string, issueLabels: string[] = []): OrchestratorDeps {
   const repo = pickBridgeRepo(fullName);
   const partners = pickPartners(repo);
   const provider = getProvider(fullName);
+  const slow = isSlowTraceIssue(issueLabels);
   return {
     resolveSpan: async (span) => {
       const norm = normalizeJaegerSpan(span);
@@ -816,10 +831,12 @@ function buildDeps(fullName: string): OrchestratorDeps {
         candidateFullName === fullName ? provider : getProvider(candidateFullName);
       // env 配 max_patch_diff_lines (默认 R-12 policy 是 500; 跨仓 LLM 出完整文件内容容易超)
       const maxPatchLines = Number(process.env.GITNEXUS_AUTOPR_MAX_PATCH_LINES ?? '500');
+      // lbug-switch v1.2: slow trace 即使 LIVE label 误加, autoPR 强制 dryRun (兜底)
+      const effectiveDryRun = slow || !!p.dryRun;
       return await runAutoPR({
         candidate: p.candidate,
         provider: repoProvider,
-        dryRun: !!p.dryRun,
+        dryRun: effectiveDryRun,
         stage6Pass: !!p.stage6Pass,
         policy: { max_patch_diff_lines: maxPatchLines },
       });
@@ -829,7 +846,8 @@ function buildDeps(fullName: string): OrchestratorDeps {
     // 触发条件:
     //   ① REPO_PATH_MAP 配了本地 clone 路径
     //   ② 路径真存在 (M-4 修, 不让 claude 拿空目录跑)
-    genFix: REPO_PATH_MAP[fullName] && existsSync(REPO_PATH_MAP[fullName])
+    // lbug-switch v1.2: slow trace 不跑 LLM (省钱 + 避免误改). error trace 走完整 LLM.
+    genFix: !slow && REPO_PATH_MAP[fullName] && existsSync(REPO_PATH_MAP[fullName])
       ? async (p) => {
           const t0 = Date.now();
           const repoPath = REPO_PATH_MAP[fullName];
@@ -927,7 +945,7 @@ mountWebhookRoutes(app, {
       `[issue] ${event.fullName} #${event.issueNumber} labels=${(event.issueLabels ?? []).join(',')}`,
     );
     const provider = getProvider(event.fullName);
-    const deps = buildDeps(event.fullName);
+    const deps = buildDeps(event.fullName, event.issueLabels ?? []);
     const r = await handleIssueOpened(
       {
         fullName: event.fullName,
